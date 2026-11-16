@@ -1,0 +1,28 @@
+<!-- public/presentation/index.html -->
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SunOpt Präsentation</title>
+  <link rel="stylesheet" href="/presentation/slides.css">
+</head>
+<body>
+  <div id="presentation-app" class="presentation-app">
+    <header class="slide-navigation" aria-label="Foliennavigation">
+      <div id="slide-tabs" class="slide-tabs"></div>
+      <div class="slide-nav-actions">
+        <button id="previous-slide" type="button" class="nav-arrow" aria-label="Vorherige Folie" title="Vorherige Folie">←</button>
+        <div id="slide-counter" class="slide-counter" aria-live="polite"></div>
+        <button id="next-slide" type="button" class="nav-arrow" aria-label="Nächste Folie" title="Nächste Folie">→</button>
+      </div>
+    </header>
+
+    <section class="slide-viewport">
+      <div id="slide-frame" class="slide-frame" tabindex="0"></div>
+    </section>
+  </div>
+
+  <script src="/presentation/slides.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "capBandPoints": 8,
+  "curveOffsetMHz": 700,
+  "fanPercent": 70,
+  "gpuIndex": 0,
+  "gpuName": "NVIDIA GeForce RTX 5060",
+  "idleClockMHz": 3555.0,
+  "nativeVfFrequencyMHz": 2865,
+  "nativeVfSlot": 96,
+  "reportedFanPercent": 68.0,
+  "status": "READY",
+  "targetVoltageMv": 1050,
+  "temperatureC": 40.0
+}

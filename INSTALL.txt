@@ -1,0 +1,53 @@
+SunOpt hash-chain update system
+===============================
+
+ONE-TIME BOOTSTRAP
+1. Extract this ZIP into the SunOpt project root.
+   It creates:
+     tools/update_watcher.py
+     tools/make_update_package.py
+     updates/inbox/...
+
+2. From the SunOpt project root run once:
+     python tools\update_watcher.py --once
+
+   The included first real update modifies:
+     src/app/project-status/page.tsx
+
+3. Check state:
+     python tools\update_watcher.py --status
+
+NORMAL USE
+Keep the watcher running in a separate terminal:
+     python tools\update_watcher.py --watch
+
+Future ChatGPT update ZIPs and their .zip.sha256 sidecars go into:
+     updates\inbox\
+
+The watcher verifies:
+- complete ZIP SHA-256
+- hash-chain parent against the previously installed update
+- every payload file hash
+- allow-listed project paths
+- ZIP member/path safety
+
+Before replacing an existing file, the old file is copied under:
+     updates\history\<UTC timestamp>\...
+
+Accepted packages move to:
+     updates\installed\
+Rejected packages move to:
+     updates\rejected\
+
+The updater cannot update itself through a normal package.  Changes to
+update_watcher.py require an explicit bootstrap replacement like this one.
+
+LOCAL PACKAGE CREATION (optional)
+Example:
+     python tools\make_update_package.py --name project-status src/app/project-status/page.tsx
+
+The creator reads updates/installed-release.json and automatically uses the
+correct parent SHA-256, then writes ZIP + sidecar directly to updates/inbox.
+
+IMPORTANT
+SHA-256 provides integrity and ordering, not author authentication.

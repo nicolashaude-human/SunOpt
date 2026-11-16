@@ -1,0 +1,10 @@
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\target\x86_64-pc-windows-msvc\release\deps\castaway-c9e15a16adb00c68.d: C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\lib.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\internal.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\lifetime_free.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\utils.rs
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\target\x86_64-pc-windows-msvc\release\deps\libcastaway-c9e15a16adb00c68.rlib: C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\lib.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\internal.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\lifetime_free.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\utils.rs
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\target\x86_64-pc-windows-msvc\release\deps\libcastaway-c9e15a16adb00c68.rmeta: C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\lib.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\internal.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\lifetime_free.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\utils.rs
+
+C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\lib.rs:
+C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\internal.rs:
+C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\lifetime_free.rs:
+C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\castaway-0.2.4\src\utils.rs:

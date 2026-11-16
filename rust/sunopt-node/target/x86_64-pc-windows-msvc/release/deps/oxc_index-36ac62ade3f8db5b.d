@@ -1,0 +1,10 @@
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\target\x86_64-pc-windows-msvc\release\deps\oxc_index-36ac62ade3f8db5b.d: C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\lib.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\idxslice.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\indexing.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\macros.rs
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\target\x86_64-pc-windows-msvc\release\deps\liboxc_index-36ac62ade3f8db5b.rlib: C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\lib.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\idxslice.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\indexing.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\macros.rs
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\target\x86_64-pc-windows-msvc\release\deps\liboxc_index-36ac62ade3f8db5b.rmeta: C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\lib.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\idxslice.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\indexing.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\macros.rs
+
+C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\lib.rs:
+C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\idxslice.rs:
+C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\indexing.rs:
+C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\oxc_index-5.0.0\src\macros.rs:

@@ -1,0 +1,3422 @@
+import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { mkdtemp as mkdtempAsync, rm } from 'node:fs/promises'
+import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  parse,
+  relative,
+  resolve,
+  sep,
+} from 'node:path'
+
+import * as colors from 'colorette'
+
+import type { BuildOptions as RawBuildOptions } from '../def/build.js'
+import {
+  CLI_VERSION,
+  cargoTargetTriple,
+  commitFileSystemTransaction,
+  commonJsDeclarationBarrier,
+  copyFileAtomic,
+  type Crate,
+  debugFactory,
+  DEFAULT_TYPE_DEF_HEADER,
+  fileExists,
+  getSystemDefaultTarget,
+  getNapiDeriveDependentCrates,
+  getPackageReconciliationRoot,
+  getTargetLinker,
+  mkdirAsync,
+  type NapiConfig,
+  parseMetadata,
+  parseTriple,
+  processTypeDefs,
+  readFileAsync,
+  readNapiConfig,
+  rebaseDeclarationSpecifiers,
+  removeNodeStreamWebTypeImports,
+  rewriteUnboundNodeGlobalTypeQueries,
+  rewriteTypeImportReferences,
+  checkSelfsign,
+  scanExportedName,
+  signFileAtomic,
+  type Target,
+  targetToEnvVar,
+  tryInstallCargoBinary,
+  unlinkAsync,
+  rustBundledWasiLibc,
+  wasiLibcHasNewFutexAbi,
+  wasiLoaderSuffix,
+  wasiSdkMajorVersion,
+  wasiTargetHasThreads,
+  writeFileAtomic,
+  withFileSystemReconciliation,
+  dirExistsAsync,
+  readdirAsync,
+  type CargoWorkspaceMetadata,
+} from '../utils/index.js'
+
+import {
+  assertBindingTargetIdentFree,
+  createCjsBinding,
+  createEsmBinding,
+  NAPI_BINDING_TARGET_EXPORT,
+} from './templates/index.js'
+import {
+  createWasiBinding,
+  createWasiBrowserBinding,
+  createWasiDeferredBrowserBinding,
+  createWasiDeferredBrowserBindingTypeDef,
+} from './templates/load-wasi-template.js'
+import {
+  createWasiBrowserWorkerBinding,
+  WASI_WORKER_TEMPLATE,
+} from './templates/wasi-worker-template.js'
+
+const debug = debugFactory('build')
+const require = createRequire(import.meta.url)
+const MANAGED_WASI_FLAVORS = [
+  { platformArchABI: 'wasm32-wasi', loaderSuffix: 'wasi', hasThreads: true },
+  {
+    platformArchABI: 'wasm32-wasip1',
+    loaderSuffix: 'wasip1',
+    hasThreads: false,
+  },
+] as const
+
+/**
+ * Everything a generated loader can report through `__napiBindingTarget`, as a
+ * TypeScript literal union. It lists every WASI flavor napi-rs knows instead of
+ * the flavors one package builds: `NAPI_RS_NATIVE_LIBRARY_PATH` may point at
+ * any generated WASI loader, and the root entry then reports what that loader
+ * loaded. A narrower union would make TypeScript reject the branches the
+ * override can actually reach.
+ */
+const BINDING_TARGET_TYPE_UNION = [
+  "'native'",
+  ...MANAGED_WASI_FLAVORS.map((flavor) => `'${flavor.platformArchABI}'`),
+].join(' | ')
+
+const BINDING_TARGET_TYPE_DECLARATION = `
+/**
+ * Which binding artifact the generated loader actually loaded: \`'native'\` for
+ * a native addon, otherwise the \`platformArchABI\` of the WASI flavor. Every
+ * flavor napi-rs can build is listed, because \`NAPI_RS_NATIVE_LIBRARY_PATH\`
+ * can point the loader at a WASI artifact this package does not build itself.
+ */
+export declare const ${NAPI_BINDING_TARGET_EXPORT}: ${BINDING_TARGET_TYPE_UNION}
+`
+
+/**
+ * The declaration for a file that types one fixed WASI artifact.
+ *
+ * A flavor's own loaders bake their `platformArchABI` in at generation time
+ * and have no override to read — `NAPI_RS_NATIVE_LIBRARY_PATH` exists only in
+ * the root loader — so the union {@link BINDING_TARGET_TYPE_DECLARATION}
+ * declares is unreachable for them, and declaring it would stop a consumer of
+ * a fixed artifact from narrowing. The wording matches the declaration the
+ * deferred `./workerd` entry already emits for the same reason.
+ */
+const createBindingTargetFlavorDeclaration = (platformArchABI: string) => `
+/** The WASI flavor this loader instantiates. */
+export declare const ${NAPI_BINDING_TARGET_EXPORT}: '${platformArchABI}'
+`
+
+/**
+ * How `source` exports `__napiBindingTarget`, and whether it exports by
+ * assignment instead.
+ *
+ * Only a real top-level export counts, and only the parser can tell one from
+ * the other places the name reaches a declaration file: `napi-derive`'s
+ * `js_doc` copies doc comments through verbatim, a `--dts-header` may carry a
+ * commented-out example of the declaration — or of `export = binding` — and a
+ * member of a `declare namespace` or `declare module` block is an export of
+ * that block, not of the file. Importing any of those yields TS2305, so
+ * treating one as the declaration would leave the generated declaration
+ * unwritten. A longer export such as `__napiBindingTargetInfo` is a different
+ * name and never counts — `assertBindingTargetIdentFree` only reserves the
+ * exact one.
+ *
+ * {@link scanExportedName} carries the rest of the rule in its `ownsName`
+ * result: which export shapes claim the name, and why the ones that live in
+ * type space alone let the generated declaration merge with them instead.
+ */
+const bindingTargetExports = (source: string) =>
+  scanExportedName(source, NAPI_BINDING_TARGET_EXPORT)
+
+/**
+ * Every literal a declaration this CLI wrote can name. The root entry's union
+ * {@link BINDING_TARGET_TYPE_UNION} and a flavor's own literal
+ * ({@link createBindingTargetFlavorDeclaration}) are both spelled out of this
+ * set, so a declaration whose type is built only from these is one of ours and
+ * may be refreshed in place; anything else belongs to whoever wrote it.
+ *
+ * A flavor dropped from {@link MANAGED_WASI_FLAVORS} stops being recognised,
+ * and its declaration is preserved rather than refreshed: a literal this
+ * version can no longer write is indistinguishable from one a `--dts-header`
+ * contributed.
+ */
+const MANAGED_BINDING_TARGET_LITERALS = new Set([
+  'native',
+  ...MANAGED_WASI_FLAVORS.map((flavor) => flavor.platformArchABI),
+])
+
+/**
+ * Whether a declared type is one this CLI wrote. Keyed on the type rather than
+ * on the doc comment above it, so rewording a comment cannot strand a
+ * declaration this version would otherwise refresh.
+ */
+const isGeneratedBindingTargetType = (type: string) =>
+  type
+    .split('|')
+    .map((member) => member.trim())
+    .every(
+      (member) =>
+        /^'[^']*'$/.test(member) &&
+        MANAGED_BINDING_TARGET_LITERALS.has(member.slice(1, -1)),
+    )
+
+type OutputKind = 'js' | 'dts' | 'node' | 'exe' | 'wasm'
+type Output = { kind: OutputKind; path: string }
+type WasiBindingMetadata = {
+  exports: string[]
+  bindingTypeDef?: string
+}
+
+export type BuildFormat = 'esm' | 'commonjs'
+
+type BuildOptions = RawBuildOptions & { cargoOptions?: string[] }
+type ParsedBuildOptions = Omit<BuildOptions, 'cwd' | 'format'> & {
+  cwd: string
+  format: BuildFormat
+}
+
+export const WASI_ARTIFACT_METADATA_PREFIX = '// napi-rs-artifact-metadata:'
+
+// The host protocol a binding built with the `napi-async-runtime` crate
+// exposes (contract version 4). See crates/async-runtime/README.md.
+const ASYNC_RUNTIME_HOST_EXPORTS = [
+  'getCurrentThreadTaskHostContractVersion',
+  'isCurrentThreadHostRegistrationActive',
+  'registerCurrentThreadTaskHost',
+  'registerTimerHost',
+  'reserveCurrentThreadHostRegistration',
+  'unregisterCurrentThreadTaskHost',
+  'unregisterTimerHost',
+] as const
+
+export interface AsyncRuntimeHostContractInput {
+  /** The addon's export names, as reported by the type definition pass. */
+  idents: string[]
+  /** Whether `napi.wasm.asyncRuntime` is on. */
+  asyncRuntime: boolean
+  /**
+   * Whether `idents` is real export metadata. `napi-derive` without its
+   * `type-def` feature emits no type definitions, so the ident list is empty
+   * for every such addon — including one that does export the whole host
+   * contract. An empty list is only evidence when this is `true`.
+   */
+  typeDefAvailable: boolean
+  packageName: string
+}
+
+/**
+ * Cross-check `napi.wasm.asyncRuntime` against the addon's export list.
+ *
+ * Returns the message to throw (`error`) or to log (`warning`), if any. With
+ * no type-def metadata there is nothing to check against, so the build says so
+ * and defers to the loader's own runtime detection.
+ */
+export function checkAsyncRuntimeHostContract({
+  idents,
+  asyncRuntime,
+  typeDefAvailable,
+  packageName,
+}: AsyncRuntimeHostContractInput): { error?: string; warning?: string } {
+  if (!typeDefAvailable) {
+    if (!asyncRuntime) {
+      return {}
+    }
+    return {
+      warning: `napi.wasm.asyncRuntime is enabled but ${packageName} is built without the \`type-def\` feature of \`napi-derive\`, so \`napi build\` has no export list to check the napi-async-runtime host contract against. The generated loaders still verify the contract at load time and fail with ERR_NAPI_ASYNC_RUNTIME_BINDING_MISMATCH if the binding does not expose it.`,
+    }
+  }
+  const missingHostExports = ASYNC_RUNTIME_HOST_EXPORTS.filter(
+    (name) => !idents.includes(name),
+  )
+  if (asyncRuntime && missingHostExports.length > 0) {
+    return {
+      error: `napi.wasm.asyncRuntime is enabled but ${packageName} does not export the napi-async-runtime host contract. Missing: ${missingHostExports.join(', ')}. Build the addon against the \`napi-async-runtime\` crate (see crates/async-runtime/README.md) or unset napi.wasm.asyncRuntime.`,
+    }
+  }
+  if (!asyncRuntime && missingHostExports.length === 0) {
+    return {
+      warning: `${packageName} exports the napi-async-runtime host contract but napi.wasm.asyncRuntime is not enabled. The generated WASI loaders will not install the CurrentThread task and timer hosts, so a binding running the CurrentThread flavor (the default on every wasm target) will make no progress unless the hosts are installed by hand. A wasm32-wasip1-threads binding that configures MultiThread does not need them.`,
+    }
+  }
+  return {}
+}
+
+type CargoConfigFingerprint = readonly [path: string, hash: string]
+
+export function getCargoDependencyGraphFingerprint(
+  metadata: CargoWorkspaceMetadata,
+  rootPackageId: string,
+): string {
+  const packages = new Map(metadata.packages.map((pkg) => [pkg.id, pkg]))
+  const nodes = new Map(
+    (metadata.resolve?.nodes ?? []).map((node) => [node.id, node]),
+  )
+  const pending = [rootPackageId]
+  const visited = new Set<string>()
+  const graph = []
+
+  while (pending.length > 0) {
+    const id = pending.pop()!
+    if (visited.has(id)) {
+      continue
+    }
+    visited.add(id)
+
+    const node = nodes.get(id)
+    const pkg = packages.get(id)
+    const dependencies = (node?.deps ?? [])
+      .map((dependency) => ({
+        name: dependency.name,
+        pkg: dependency.pkg,
+        kinds: dependency.dep_kinds
+          .map(({ kind, target }) => ({ kind, target }))
+          .sort(
+            (left, right) =>
+              (left.kind ?? '').localeCompare(right.kind ?? '') ||
+              (left.target ?? '').localeCompare(right.target ?? ''),
+          ),
+      }))
+      .sort((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right)),
+      )
+    for (const dependency of dependencies) {
+      pending.push(dependency.pkg)
+    }
+
+    graph.push({
+      id,
+      manifestPath: pkg?.manifest_path,
+      resolvedFeatures: [...(node?.features ?? [])].sort(),
+      dependencies,
+      declaredDependencies: (pkg?.dependencies ?? [])
+        .map((dependency) => ({
+          name: dependency.name,
+          source: dependency.source,
+          requirement: dependency.req,
+          kind: dependency.kind,
+          rename: dependency.rename,
+          optional: dependency.optional,
+          usesDefaultFeatures: dependency.uses_default_features,
+          features: [...dependency.features].sort(),
+          target: dependency.target,
+          registry: dependency.registry,
+        }))
+        .sort((left, right) =>
+          JSON.stringify(left).localeCompare(JSON.stringify(right)),
+        ),
+      declaredFeatures: Object.entries(pkg?.features ?? {})
+        .map(([name, features]) => [name, [...features].sort()] as const)
+        .sort(([left], [right]) => left.localeCompare(right)),
+    })
+  }
+
+  graph.sort((left, right) => left.id.localeCompare(right.id))
+  return createHash('sha256').update(JSON.stringify(graph)).digest('hex')
+}
+
+export function getTypeDefCacheFolder(options: {
+  targetDir: string
+  crateName: string
+  manifestPath: string
+  targetTriple: string
+  profile: string
+  features?: string[]
+  allFeatures?: boolean
+  noDefaultFeatures?: boolean
+  cargoOptions?: string[]
+  rustFlags?: Record<string, string | undefined>
+  cargoProfileEnv?: Record<string, string | undefined>
+  cargoConfig?: CargoConfigFingerprint[]
+  cargoDependencyGraph?: string
+}) {
+  const features = [
+    ...new Set(
+      (options.features ?? []).flatMap((feature) =>
+        feature.split(/[,\s]+/).filter(Boolean),
+      ),
+    ),
+  ].sort()
+  const rustFlags = Object.entries(options.rustFlags ?? {})
+    .filter((entry): entry is [string, string] => entry[1] !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+  const cargoConfig = [...(options.cargoConfig ?? [])].sort(([left], [right]) =>
+    left.localeCompare(right),
+  )
+  const cargoProfileEnv = Object.entries(options.cargoProfileEnv ?? {})
+    .filter((entry): entry is [string, string] => entry[1] !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+  const identity = JSON.stringify({
+    version: 4,
+    cliVersion: CLI_VERSION,
+    manifestPath: options.manifestPath,
+    cargoDependencyGraph: options.cargoDependencyGraph,
+    targetTriple: options.targetTriple,
+    profile: options.profile,
+    features: {
+      selected: features,
+      all: options.allFeatures === true,
+      noDefault: options.noDefaultFeatures === true,
+    },
+    cargoOptions: options.cargoOptions ?? [],
+    rustFlags,
+    cargoProfileEnv,
+    cargoConfig,
+  })
+  const hash = createHash('sha256')
+    .update(identity)
+    .digest('hex')
+    .substring(0, 16)
+
+  return join(options.targetDir, 'napi-rs', `${options.crateName}-${hash}`)
+}
+
+/**
+ * Name of the emnapi archive directory built against the wasi-sdk 34 ABI.
+ * Only the threaded target has one: the signature change it carries lives in
+ * the threads-only futex code.
+ */
+export const EMNAPI_WASI_SDK_34_LINK_DIR = 'wasm32-wasip1-threads-wasi-sdk-34'
+
+export interface EmnapiLinkDirSelection {
+  /** Directory name under `emnapi/lib` whose archives should be linked. */
+  linkDirName: string
+  /** Detected wasi-sdk major version, `null` when no wasi-sdk is configured. */
+  wasiSdkMajor: number | null
+  /** `true` when the toolchain needs the wasi-sdk 34 archives. */
+  needsWasiSdk34: boolean
+}
+
+/**
+ * Pick the emnapi archive directory for a WASI build.
+ *
+ * wasi-libc removed the unused `int op` parameter from
+ * `__wasilibc_futex_wait_atomic_wait` / `__wasilibc_futex_wait_maybe_busy`,
+ * and wasi-sdk 34 is the first release shipping the 3-argument signature.
+ * Linking the legacy 4-argument archives against a wasi-sdk >= 34 sysroot
+ * makes `wasm-ld` report `function signature mismatch` and emit an invalid
+ * wasm module, so emnapi publishes a second archive set for the new ABI and
+ * the directory has to be chosen by wasi-sdk version, not by target triple.
+ *
+ * Without `WASI_SDK_PATH`, cargo links through `rust-lld` against the
+ * wasi-libc bundled with the Rust standard library, so that archive is
+ * probed instead. Rust picked up wasi-sdk 34 in rust-lang/rust#161773, which
+ * lands in 1.100, and a toolchain carrying it needs the new archives even
+ * though no wasi-sdk is configured.
+ *
+ * The legacy directory stays the default whenever the ABI cannot be
+ * determined, and older emnapi releases ship it alone.
+ */
+export function selectEmnapiLinkDir(
+  emnapiLibDir: string,
+  wasiTarget: string,
+  hasThreads: boolean,
+  wasiSdkPath: string | undefined,
+  {
+    cwd,
+    rustWasiLibc,
+  }: {
+    // The directory Cargo is spawned in. It selects the toolchain, so the
+    // sysroot probe has to use it too.
+    cwd?: string
+    // Omit to resolve the Rust sysroot lazily, so a configured wasi-sdk never
+    // pays for a `rustc` invocation. Pass `null` to skip the probe.
+    rustWasiLibc?: string | null
+  } = {},
+): EmnapiLinkDirSelection {
+  const usingWasiSdk = Boolean(wasiSdkPath) && existsSync(wasiSdkPath!)
+  const wasiSdkMajor = usingWasiSdk ? wasiSdkMajorVersion(wasiSdkPath!) : null
+  // Whichever wasi-libc actually gets linked decides the ABI: the wasi-sdk
+  // sysroot when one is configured, otherwise the copy bundled with the Rust
+  // standard library. Only the threaded target has a second archive set, so
+  // `hasThreads` gates the probe as well as the result — a threadless build
+  // must not pay for a `rustc` invocation and an archive read it cannot use.
+  const needsWasiSdk34 =
+    hasThreads &&
+    (usingWasiSdk
+      ? wasiSdkMajor !== null && wasiSdkMajor >= 34
+      : wasiLibcHasNewFutexAbi(
+          rustWasiLibc === undefined
+            ? rustBundledWasiLibc(wasiTarget, cwd)
+            : rustWasiLibc,
+        ) === true)
+  const linkDirName =
+    needsWasiSdk34 &&
+    existsSync(join(emnapiLibDir, EMNAPI_WASI_SDK_34_LINK_DIR))
+      ? EMNAPI_WASI_SDK_34_LINK_DIR
+      : wasiTarget
+  return { linkDirName, wasiSdkMajor, needsWasiSdk34 }
+}
+
+export function createWasiCompilerFlags(
+  wasiSdkPath: string,
+  wasiTarget: string,
+  hasThreads: boolean,
+  shellEscapedFlags = true,
+) {
+  const compileArguments = [
+    `--target=${wasiTarget}`,
+    `--sysroot=${join(wasiSdkPath, 'share', 'wasi-sysroot')}`,
+    ...(hasThreads ? ['-pthread'] : []),
+    '-mllvm',
+    '-wasm-enable-sjlj',
+  ]
+  const linkerArguments = [
+    `-fuse-ld=${join(wasiSdkPath, 'bin', 'wasm-ld')}`,
+    `--target=${wasiTarget}`,
+  ]
+  return {
+    compileFlags: joinCompilerArguments(compileArguments, shellEscapedFlags),
+    linkerFlags: joinCompilerArguments(linkerArguments, shellEscapedFlags),
+  }
+}
+
+export function createArtifactDestinationName(
+  binaryName: string,
+  target: Target,
+  sourceName: string,
+  platform: boolean,
+) {
+  let destinationName = binaryName
+  if (platform || target.platform === 'wasi') {
+    destinationName += `.${target.platformArchABI}`
+  }
+  return `${destinationName}.${sourceName.endsWith('.wasm') ? 'wasm' : 'node'}`
+}
+
+function joinCompilerArguments(
+  arguments_: string[],
+  shellEscapedFlags: boolean,
+) {
+  if (!shellEscapedFlags) {
+    const argumentWithWhitespace = arguments_.find((argument) =>
+      /\s/.test(argument),
+    )
+    if (argumentWithWhitespace) {
+      throw new Error(
+        `CC_SHELL_ESCAPED_FLAGS disables shell parsing, so the WASI SDK argument cannot contain whitespace: ${argumentWithWhitespace}`,
+      )
+    }
+    return arguments_.join(' ')
+  }
+  return arguments_
+    .map((argument) => `'${argument.replaceAll("'", "'\\''")}'`)
+    .join(' ')
+}
+
+function envBoolean(value: string | undefined) {
+  return (
+    value !== undefined &&
+    value !== '' &&
+    value !== '0' &&
+    value !== 'false' &&
+    value !== 'no'
+  )
+}
+
+function createWasiArtifactMetadata(
+  rootEntry: string | null,
+  binaryName: string,
+  exports: string[],
+) {
+  return `${WASI_ARTIFACT_METADATA_PREFIX}${JSON.stringify({
+    version: 2,
+    rootEntry,
+    exports,
+    managedRootEntries: [
+      'browser.js',
+      ...(rootEntry ? [rootEntry] : []),
+      `${binaryName}.wasm`,
+      `${binaryName}.debug.wasm`,
+    ],
+  })}\n`
+}
+
+function parseExistingWasiArtifactMetadata(content: string) {
+  const firstLine = content.split(/\r?\n/, 1)[0]
+  if (!firstLine.startsWith(WASI_ARTIFACT_METADATA_PREFIX)) {
+    return undefined
+  }
+  try {
+    const metadata = JSON.parse(
+      firstLine.slice(WASI_ARTIFACT_METADATA_PREFIX.length),
+    ) as Record<string, unknown>
+    if (
+      (metadata.version !== 1 && metadata.version !== 2) ||
+      (metadata.rootEntry !== null && typeof metadata.rootEntry !== 'string')
+    ) {
+      return undefined
+    }
+    const managedRootEntries =
+      metadata.version === 1
+        ? ['browser.js', ...(metadata.rootEntry ? [metadata.rootEntry] : [])]
+        : metadata.managedRootEntries
+    if (
+      !Array.isArray(managedRootEntries) ||
+      !managedRootEntries.every((entry) => typeof entry === 'string')
+    ) {
+      return undefined
+    }
+    const exports = metadata.exports
+    return {
+      managedRootEntries,
+      exports:
+        Array.isArray(exports) &&
+        exports.every((entry) => typeof entry === 'string')
+          ? exports
+          : undefined,
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function resolveManagedOutputPath(
+  outputDir: string,
+  entry: string,
+  description: string,
+) {
+  if (!entry || isAbsolute(entry)) {
+    throw new Error(
+      `${description} must be a non-empty relative path: ${entry}`,
+    )
+  }
+  const outputRoot = resolve(outputDir)
+  const path = resolve(outputRoot, entry)
+  const relativePath = relative(outputRoot, path)
+  if (
+    relativePath === '' ||
+    relativePath === '..' ||
+    relativePath.startsWith(`..${sep}`) ||
+    isAbsolute(relativePath)
+  ) {
+    throw new Error(`${description} escapes its output directory: ${entry}`)
+  }
+  return path
+}
+
+export function selectWasiBrowserTarget(
+  buildTarget: Target,
+  configuredTargets: Target[],
+  emittedTargets: Target[],
+) {
+  if (buildTarget.platform === 'wasi') {
+    return buildTarget
+  }
+  const configuredWasiTargets = configuredTargets.filter(
+    (target) => target.platform === 'wasi',
+  )
+  return (
+    configuredWasiTargets.find((target) => !wasiTargetHasThreads(target)) ??
+    configuredWasiTargets[0] ??
+    emittedTargets.find((target) => !wasiTargetHasThreads(target)) ??
+    emittedTargets[0]
+  )
+}
+
+export function createWasiBrowserEntry(
+  packageName: string,
+  platformArchABI: string,
+  idents: string[],
+) {
+  const packageSpecifier = `${packageName}-${platformArchABI}`
+  return (
+    `export * from '${packageSpecifier}'\n` +
+    (idents.length === 0
+      ? `export { default } from '${packageSpecifier}'\n`
+      : '')
+  )
+}
+
+export function createWasiDeferredBindingTypeDef(
+  bindingModuleSpecifier: string,
+  hasTypeDef: boolean,
+  platformArchABI?: string,
+) {
+  const typeDef = createWasiDeferredBrowserBindingTypeDef(
+    bindingModuleSpecifier,
+    platformArchABI,
+  )
+  if (hasTypeDef) {
+    return typeDef
+  }
+
+  const rootBindingType = `typeof import('${bindingModuleSpecifier}')`
+  if (!typeDef.includes(rootBindingType)) {
+    throw new Error(
+      'The deferred WASI type definition no longer contains its root binding type',
+    )
+  }
+
+  return typeDef.replace(rootBindingType, 'Record<string, unknown>')
+}
+
+/** memory32 tops out at 4 GiB, which is also `--max-memory` in `crates/build/src/wasi.rs`. */
+const WASM32_MAX_MEMORY_PAGES = 65536
+
+function validateWasmMemoryPages(
+  value: number | undefined,
+  key: string,
+): number | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+  if (
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > WASM32_MAX_MEMORY_PAGES
+  ) {
+    throw new Error(
+      `${key} must be an integer between 1 and ${WASM32_MAX_MEMORY_PAGES} pages; received ${value}`,
+    )
+  }
+  return value
+}
+
+export interface ResolvedWasmMemory {
+  /** `undefined` keeps each template's own default (4000, or 1024 for `./workerd`). */
+  initialMemory?: number
+  /** `undefined` keeps the template default (65536). */
+  maximumMemory?: number
+}
+
+/**
+ * Resolve the `WebAssembly.Memory` descriptor the generated loaders embed, for
+ * one WASI flavor.
+ *
+ * The threaded loaders share one `shared: true` memory with every wasi-threads
+ * worker, so it is sized for the whole pool. The threadless loaders have a
+ * single thread and a plain growable `ArrayBuffer`, so they only need to clear
+ * the module's link-time floor (`-zstack-size` plus static data) and grow on
+ * demand. `napi.wasm.threadlessInitialMemory` sizes the threadless loaders
+ * without shrinking the threaded one; unset, it falls back to
+ * `napi.wasm.initialMemory` and nothing changes.
+ */
+export function resolveWasmMemory(
+  wasm: NapiConfig['wasm'],
+  hasThreads: boolean,
+): ResolvedWasmMemory {
+  const initialMemory = validateWasmMemoryPages(
+    wasm?.initialMemory,
+    'napi.wasm.initialMemory',
+  )
+  const threadlessInitialMemory = validateWasmMemoryPages(
+    wasm?.threadlessInitialMemory,
+    'napi.wasm.threadlessInitialMemory',
+  )
+  const maximumMemory = validateWasmMemoryPages(
+    wasm?.maximumMemory,
+    'napi.wasm.maximumMemory',
+  )
+  const ceiling = maximumMemory ?? WASM32_MAX_MEMORY_PAGES
+  for (const [key, value] of [
+    ['napi.wasm.initialMemory', initialMemory],
+    ['napi.wasm.threadlessInitialMemory', threadlessInitialMemory],
+  ] as const) {
+    if (value !== undefined && value > ceiling) {
+      throw new Error(
+        `${key} (${value} pages) must not exceed napi.wasm.maximumMemory (${ceiling} pages)`,
+      )
+    }
+  }
+  return {
+    // The deferred `./workerd` loader is only emitted for threadless flavors
+    // (see `writeWasiBindingForTarget`), so it receives this same value.
+    initialMemory: hasThreads
+      ? initialMemory
+      : (threadlessInitialMemory ?? initialMemory),
+    maximumMemory,
+  }
+}
+
+/**
+ * Normalize a rendered `.d.ts` header. The generated body is concatenated
+ * straight onto it, so it always ends with a blank line — and an empty header
+ * stays empty, so a file with no header keeps no leading whitespace.
+ */
+function finalizeTypeDefHeader(header: string) {
+  let normalized = header
+  if (normalized && !normalized.endsWith('\n')) {
+    normalized += '\n'
+  }
+  if (normalized && !normalized.endsWith('\n\n')) {
+    normalized += '\n'
+  }
+  return normalized
+}
+
+/**
+ * Whether a build's declaration file should declare `__napiBindingTarget`.
+ *
+ * The export exists only on a generated loader, so the declaration has to
+ * follow the loaders a build actually writes. This mirrors both writers:
+ *
+ * - {@link writeJsBinding} writes the root loader for `--platform` without
+ *   `--no-js-binding` (`rootLoaderCandidate`), and then only when the build has
+ *   runtime exports or a WASI flavor to fall back to.
+ * - `Builder.writeWasiBinding` writes a flavor's loader set when that flavor is
+ *   the build target, or when an earlier build of it left metadata on disk
+ *   (`emitsWasiLoader`). A merely configured flavor is skipped, and a build
+ *   that skips every flavor emits no loader to carry the export.
+ *
+ * The export list is only known once typegen has run, and typegen writes the
+ * declaration file itself, so the decision comes back as a predicate over that
+ * list instead of a flag taken up front.
+ *
+ * It gates the *reservation* of the name too — `Builder.generateTypeDef` calls
+ * {@link assertBindingTargetIdentFree} only when this answers `true`. Declaring
+ * the name and forbidding an addon from exporting it are the same question, and
+ * a build that emits no loader asks neither.
+ */
+export function bindingTargetDeclarationPredicate(input: {
+  rootLoaderCandidate: boolean
+  hasWasiFallback: boolean
+  emitsWasiLoader: boolean
+}): (exports: readonly string[]) => boolean {
+  return (exports) =>
+    input.emitsWasiLoader ||
+    (input.rootLoaderCandidate && (input.hasWasiFallback || exports.length > 0))
+}
+
+/**
+ * The `.d.cts` content for a WASI flavor loader, derived from the root
+ * declaration this build wrote.
+ *
+ * An ESM source (`*.d.mts`, or `*.d.ts` in a `"type": "module"` package) is
+ * re-declared verbatim when nothing in it changes meaning under CommonJS
+ * interpretation — which is everything a generated typedef and most
+ * `--dts-header`s contain. {@link commonJsDeclarationBarrier} names the
+ * constructs that still refuse, and why.
+ */
+export function prepareWasiBindingTypeDef(
+  source: string,
+  sourcePath: string,
+  destinationPath: string,
+  hasThreads: boolean,
+  packageType?: 'module' | 'commonjs',
+) {
+  if (
+    sourcePath.endsWith('.mts') ||
+    (sourcePath.endsWith('.ts') && packageType === 'module')
+  ) {
+    const barrier = commonJsDeclarationBarrier(source)
+    if (barrier !== undefined) {
+      throw new Error(
+        `Cannot emit the CommonJS WASI declaration ${destinationPath} from the ESM declaration ${sourcePath}: ${barrier} cannot be re-declared in a CommonJS declaration. Use a .d.cts --dts path for WASI builds from ESM sources.`,
+      )
+    }
+  }
+  const targetSource = hasThreads
+    ? source
+    : rewriteUnboundNodeGlobalTypeQueries(
+        removeNodeStreamWebTypeImports(source),
+      )
+  return rebaseDeclarationSpecifiers(targetSource, sourcePath, destinationPath)
+}
+
+/**
+ * Make a declaration file declare the `__napiBindingTarget` its loader exports.
+ *
+ * `platformArchABI` names the WASI flavor the file types, and the declaration
+ * is then that flavor's exact literal; without it the file is the root entry's
+ * and keeps the full union, which only the root entry can reach.
+ *
+ * Two kinds of file arrive here. A WASI declaration derived fresh from the root
+ * `index.d.ts` inherits that union and has to be narrowed. A declaration kept
+ * from an earlier build — a build that does not target WASI regenerates every
+ * declared flavor's loader from the metadata that flavor's own build left
+ * behind, and reuses its declaration file verbatim — may predate the export
+ * entirely, or carry a union an earlier version of this branch wrote.
+ *
+ * Either may also carry a declaration nobody here wrote, because a project's
+ * own `--dts-header` may declare the export to work around loaders that predate
+ * it. So ownership, not mere presence, decides what happens.
+ *
+ * Three cases, decided in this order:
+ *
+ * - The declaration the rendered `.d.ts` header owns. `renderedHeader` is that
+ *   header as this build rendered it; if it declares the export, the project's
+ *   own declaration wins: nothing is appended, and it is never rewritten.
+ *   Declaring it a second time would be a TS2451 redeclaration.
+ *
+ *   The header is matched by the text of its declaration against the first
+ *   declaration in the file, not by a prefix of the file. A WASI declaration is
+ *   derived through {@link prepareWasiBindingTypeDef}, which rewrites relative
+ *   import specifiers and, for the threadless flavor, drops `node:stream/web`
+ *   imports — a header carrying either stops being a literal prefix of the file
+ *   derived from it, while the declaration statement itself comes through
+ *   untouched and stays the first one, because those rewrites never reorder
+ *   statements. On the preserved path the header in hand is this build's, not
+ *   the one the kept file was written with, and a kept declaration that reads
+ *   differently is correctly not the header's.
+ * - A declaration the header does not own, alone in its statement, whose type
+ *   is built only out of the literals this CLI writes
+ *   ({@link isGeneratedBindingTargetType}), is one of ours. Stale — an older
+ *   union, or the other flavor's literal — it is replaced in place, comment
+ *   and all, so a file kept from an earlier build ends up saying what the
+ *   loader written beside it now reports.
+ * - Any other export of the name is someone else's and is preserved, with
+ *   nothing appended beside it. A looser match would rewrite a declaration a
+ *   `--dts-header` contributed. That covers a statement declaring more names
+ *   than this one — the block a refresh replaces spans them too, and this CLI
+ *   writes the declaration alone — and it covers every other way a header can
+ *   claim the name: as a `function`, `class`, `enum` or instantiated
+ *   `namespace`, through an `export { target as __napiBindingTarget }` or
+ *   `export * as __napiBindingTarget from '…'` clause, or through
+ *   `export import __napiBindingTarget = …`. None of those leaves a
+ *   declaration here to rewrite, and an export added beside any of them is a
+ *   TypeScript error (TS2300, TS2323, TS2440 or TS2567 by form).
+ *
+ *   A header that exports the name in type space only — a `type`, an
+ *   `interface`, a namespace that declares no value — claims nothing: the
+ *   declaration merges with it, and withholding it would cost a consumer the
+ *   value the loader really exports — see {@link scanExportedName}.
+ *
+ * A declaration file that exports by assignment (`export = binding`, what a
+ * build without `napi-derive`'s `type-def` feature emits) cannot carry a named
+ * export declaration, so it is left alone; its exports are untyped anyway.
+ * That, too, is read off the parse — a block comment documenting the CommonJS
+ * form is not an export assignment.
+ */
+export function ensureBindingTargetDeclaration(
+  typeDef: string,
+  platformArchABI?: string,
+  renderedHeader?: string,
+) {
+  const { exportsByAssignment, ownsName, declarations } =
+    bindingTargetExports(typeDef)
+  if (exportsByAssignment) {
+    return typeDef
+  }
+  const declaration = platformArchABI
+    ? createBindingTargetFlavorDeclaration(platformArchABI)
+    : BINDING_TARGET_TYPE_DECLARATION
+  if (!ownsName) {
+    const separator = typeDef.length === 0 || typeDef.endsWith('\n') ? '' : '\n'
+    return `${typeDef}${separator}${declaration}`
+  }
+  // Compared declarator by declarator rather than statement by statement: one
+  // statement may declare more names, and rebasing a relative inline import in
+  // a sibling's type rewrites the statement without touching this declarator.
+  const headerDeclarator = renderedHeader
+    ? bindingTargetExports(renderedHeader).declarations.map((found) =>
+        renderedHeader.slice(found.declaratorStart, found.declaratorEnd),
+      )[0]
+    : undefined
+  const headerOwnsFirst =
+    headerDeclarator !== undefined &&
+    declarations.length > 0 &&
+    typeDef.slice(
+      declarations[0].declaratorStart,
+      declarations[0].declaratorEnd,
+    ) === headerDeclarator
+  for (const [index, found] of declarations.entries()) {
+    if (headerOwnsFirst && index === 0) {
+      continue
+    }
+    if (
+      // A statement that declares more than this one name belongs to whoever
+      // wrote it whatever its type says: the block a refresh replaces covers
+      // those names too, and this CLI has never written one, so a declaration
+      // with siblings is not a declaration of ours to refresh.
+      found.declaratorCount > 1 ||
+      found.type === undefined ||
+      !isGeneratedBindingTargetType(found.type)
+    ) {
+      continue
+    }
+    // Replacing the block instead of appending: a file that carries a union,
+    // or the other flavor's literal, has to be narrowed to the flavor it
+    // types rather than gaining a second, conflicting declaration. The span
+    // covers the doc comment above the statement, so the comment is swapped
+    // with it rather than stranded — and the statement's own `;`, which has to
+    // come back, or a statement that followed on the same line runs into the
+    // replacement (TS1005).
+    const terminator =
+      typeDef.slice(found.end - 1, found.end) === ';' ? ';' : ''
+    return (
+      typeDef.slice(0, found.start) +
+      declaration.trim() +
+      terminator +
+      typeDef.slice(found.end)
+    )
+  }
+  return typeDef
+}
+
+export function collectStaleWasiBuildOutputNames(
+  binaryName: string,
+  buildTarget: Target,
+  configuredTargets: Target[],
+) {
+  const staleNames = new Set<string>()
+  const retainedFlavors = new Set(
+    [
+      ...configuredTargets.filter((target) => target.platform === 'wasi'),
+      buildTarget,
+    ].map((target) => target.platformArchABI),
+  )
+  for (const flavor of MANAGED_WASI_FLAVORS) {
+    const regenerated = flavor.platformArchABI === buildTarget.platformArchABI
+    if (!regenerated && retainedFlavors.has(flavor.platformArchABI)) {
+      continue
+    }
+    for (const suffix of [
+      `${flavor.loaderSuffix}.cjs`,
+      `${flavor.loaderSuffix}.d.cts`,
+      `${flavor.loaderSuffix}-browser.js`,
+      `${flavor.loaderSuffix}-deferred.js`,
+      `${flavor.loaderSuffix}-deferred.d.ts`,
+      ...(!regenerated
+        ? [
+            `${flavor.platformArchABI}.wasm`,
+            `${flavor.platformArchABI}.debug.wasm`,
+          ]
+        : []),
+    ]) {
+      staleNames.add(`${binaryName}.${suffix}`)
+    }
+  }
+  const regeneratesWorkers = wasiTargetHasThreads(buildTarget)
+  const retainsThreadedFlavor = MANAGED_WASI_FLAVORS.some(
+    (flavor) =>
+      flavor.hasThreads && retainedFlavors.has(flavor.platformArchABI),
+  )
+  if (regeneratesWorkers || !retainsThreadedFlavor) {
+    staleNames.add('wasi-worker.mjs')
+    staleNames.add('wasi-worker-browser.mjs')
+  }
+  return staleNames
+}
+
+export function removeWasmCustomSection(
+  binary: Uint8Array,
+  sectionName: string,
+): Uint8Array {
+  if (
+    binary.length < 8 ||
+    binary[0] !== 0x00 ||
+    binary[1] !== 0x61 ||
+    binary[2] !== 0x73 ||
+    binary[3] !== 0x6d
+  ) {
+    throw new Error('Invalid WebAssembly module header')
+  }
+
+  const retainedChunks: Uint8Array[] = []
+  let retainedStart = 0
+  let offset = 8
+  let removed = false
+
+  while (offset < binary.length) {
+    const sectionStart = offset
+    const sectionId = binary[offset++]
+    const sectionSize = readWasmU32(binary, offset)
+    const payloadStart = sectionSize.nextOffset
+    const sectionEnd = payloadStart + sectionSize.value
+    if (sectionEnd > binary.length) {
+      throw new Error('Invalid WebAssembly section size')
+    }
+
+    let shouldRemove = false
+    if (sectionId === 0) {
+      const nameSize = readWasmU32(binary, payloadStart)
+      const nameEnd = nameSize.nextOffset + nameSize.value
+      if (nameEnd > sectionEnd) {
+        throw new Error('Invalid WebAssembly custom section name')
+      }
+      shouldRemove =
+        Buffer.from(binary.subarray(nameSize.nextOffset, nameEnd)).toString(
+          'utf8',
+        ) === sectionName
+    }
+
+    if (shouldRemove) {
+      retainedChunks.push(binary.subarray(retainedStart, sectionStart))
+      retainedStart = sectionEnd
+      removed = true
+    }
+    offset = sectionEnd
+  }
+
+  if (!removed) {
+    return binary
+  }
+  retainedChunks.push(binary.subarray(retainedStart))
+  const outputLength = retainedChunks.reduce(
+    (length, chunk) => length + chunk.length,
+    0,
+  )
+  const output = new Uint8Array(outputLength)
+  let outputOffset = 0
+  for (const chunk of retainedChunks) {
+    output.set(chunk, outputOffset)
+    outputOffset += chunk.length
+  }
+  return output
+}
+
+function readWasmU32(binary: Uint8Array, start: number) {
+  let value = 0
+  let shift = 0
+  let offset = start
+  while (offset < binary.length && shift <= 28) {
+    const byte = binary[offset++]
+    value += (byte & 0x7f) * 2 ** shift
+    if ((byte & 0x80) === 0) {
+      return { value, nextOffset: offset }
+    }
+    shift += 7
+  }
+  throw new Error('Invalid WebAssembly unsigned LEB128 value')
+}
+
+type BuildFormatOptions = {
+  format?: string
+  esm?: boolean
+  commonjs?: boolean
+}
+
+/**
+ * Resolve the explicit build format and its legacy CLI/API aliases.
+ *
+ * CommonJS is the historical default. The aliases are intentionally kept
+ * separate from `format` because `--esm` and `--commonjs` are boolean flags,
+ * while `--format` takes a value.
+ */
+export function resolveBuildFormat(options: BuildFormatOptions): BuildFormat {
+  let format: BuildFormat | undefined
+  if (options.format !== undefined) {
+    if (options.format === 'esm' || options.format === 'commonjs') {
+      format = options.format
+    } else {
+      throw new Error(
+        `Invalid build format ${JSON.stringify(options.format)}. Expected \`esm\` or \`commonjs\`.`,
+      )
+    }
+  }
+
+  if (options.esm && options.commonjs) {
+    throw new Error('`--esm` and `--commonjs` cannot be used together.')
+  }
+
+  const aliasFormat = options.esm
+    ? 'esm'
+    : options.commonjs
+      ? 'commonjs'
+      : undefined
+  if (format && aliasFormat && format !== aliasFormat) {
+    throw new Error(
+      `\`--format ${format}\` cannot be used with \`--${aliasFormat}\`.`,
+    )
+  }
+
+  return format ?? aliasFormat ?? 'commonjs'
+}
+
+/** Build the configured NAPI-RS crate and generate its output artifacts. */
+export async function buildProject(rawOptions: BuildOptions) {
+  debug('napi build command receive options: %O', rawOptions)
+
+  const options: ParsedBuildOptions = {
+    dtsCache: true,
+    ohosSign: true,
+    ...rawOptions,
+    format: resolveBuildFormat(rawOptions),
+    cwd: rawOptions.cwd ?? process.cwd(),
+  }
+
+  // Reject invalid cross-compilation flag combinations before anything with
+  // a side effect runs (`cargo metadata`, cargo binary auto-installs,
+  // toolchain downloads, ...), so the user always gets the validation error
+  // rather than an unrelated failure from those steps.
+  validateCrossCompileFlags(options)
+  if (options.useNapiCross) {
+    // Check the host constraint before resolving the target: without an
+    // explicit `--target` (or `CARGO_BUILD_TARGET`) the target resolution
+    // spawns `rustc -vV`, and on an unsupported host without Rust on the
+    // `PATH` that spawn failure would mask the actual validation error.
+    validateNapiCrossHost()
+    validateNapiCrossSupport(resolveTarget(options.target).triple)
+  }
+
+  const resolvePath = (...paths: string[]) => resolve(options.cwd, ...paths)
+
+  const manifestPath = resolvePath(options.manifestPath ?? 'Cargo.toml')
+  const metadataTarget = options.target ?? process.env.CARGO_BUILD_TARGET
+  const metadata = await parseMetadata(manifestPath, {
+    cwd: options.cwd,
+    featurePackage: options.package,
+    features: options.features,
+    allFeatures: options.allFeatures,
+    noDefaultFeatures: options.noDefaultFeatures,
+    cargoOptions: options.cargoOptions,
+    // `parseTriple` canonicalizes legacy spellings (e.g. `wasm32-wasi` ->
+    // `wasm32-wasip1-threads`) the same way the build's own target
+    // resolution does. `--cross-compile` runs `cargo zigbuild`, which hands
+    // Cargo only the part before the first dot of `--target`; filter the
+    // resolve for that same spelling. Other build modes give Cargo the
+    // requested target verbatim.
+    filterPlatform:
+      metadataTarget &&
+      (options.crossCompile
+        ? cargoTargetTriple(parseTriple(metadataTarget).triple)
+        : parseTriple(metadataTarget).triple),
+  })
+
+  const crate = metadata.packages.find((p) => {
+    // package with given name
+    if (options.package) {
+      return p.name === options.package
+    } else {
+      return p.manifest_path === manifestPath
+    }
+  })
+
+  if (!crate) {
+    throw new Error(
+      'Unable to find crate to build. It seems you are trying to build a crate in a workspace, try using `--package` option to specify the package to build.',
+    )
+  }
+  const config = await readNapiConfig(
+    resolvePath(options.packageJsonPath ?? 'package.json'),
+    options.configPath ? resolvePath(options.configPath) : undefined,
+  )
+
+  const builder = new Builder(metadata, crate, config, options)
+
+  return builder.build()
+}
+
+/**
+ * Resolve the target triple the build will run against, following the same
+ * precedence the build itself uses: the explicit `--target` option, then the
+ * `CARGO_BUILD_TARGET` environment variable, then the host default target.
+ */
+function resolveTarget(targetOption?: string): Target {
+  return targetOption
+    ? parseTriple(targetOption)
+    : process.env.CARGO_BUILD_TARGET
+      ? parseTriple(process.env.CARGO_BUILD_TARGET)
+      : getSystemDefaultTarget()
+}
+
+/**
+ * Validate the combination of the cross-compilation related flags.
+ *
+ * `--use-cross`, `--use-napi-cross` and `--cross-compile` (`-x`) are three
+ * mutually exclusive cross-compilation mechanisms; combining any two of them
+ * leaves both active at once and produces broken builds, so it is rejected
+ * upfront before any side effect (like auto-installing cargo binaries or
+ * downloading toolchains) happens.
+ *
+ * `--cross-compile` with a `windows-gnu` target is rejected as well: on a
+ * non-Windows host it routes the build to `cargo xwin build`, but
+ * `cargo-xwin` only sets up MSVC toolchains — for `windows-gnu` targets it
+ * silently does nothing and the build dies much later with a cryptic
+ * ``error: linker `x86_64-w64-mingw32-gcc` not found`` that never mentions
+ * `cargo-xwin`. Only an explicitly requested target (`--target` or
+ * `CARGO_BUILD_TARGET`) is inspected, so this validation never has to spawn
+ * `rustc -vV`; a non-Windows host's default target can never be
+ * `windows-gnu` anyway.
+ *
+ * Two other spellings are rejected outright: `*.json` custom target specs,
+ * which neither `cargo zigbuild` nor `cargo xwin` can consume, and
+ * libc/ABI-versioned Windows targets, which never reach `cargo zigbuild`
+ * (the only `-x` route that splits the suffix off `--target`) and so hit
+ * Cargo verbatim.
+ */
+export function validateCrossCompileFlags(
+  options: {
+    useCross?: boolean
+    crossCompile?: boolean
+    useNapiCross?: boolean
+    watch?: boolean
+    target?: string
+  },
+  hostPlatform: string = process.platform,
+): void {
+  const enabledCrossFlags = [
+    options.useCross ? '`--use-cross`' : null,
+    options.useNapiCross ? '`--use-napi-cross`' : null,
+    options.crossCompile ? '`--cross-compile` (`-x`)' : null,
+  ].filter((flag): flag is string => flag !== null)
+
+  if (enabledCrossFlags.length > 1) {
+    throw new Error(
+      `${enabledCrossFlags.join(' and ')} cannot be used together. Please pick exactly one cross-compilation mechanism: \`--use-cross\`, \`--use-napi-cross\`, or \`--cross-compile\` (\`-x\`).`,
+    )
+  }
+
+  if (options.watch && options.useCross) {
+    throw new Error(
+      '`--watch` cannot be used with `--use-cross`. `cargo watch` only supports the plain `cargo build` flow, please drop one of the two flags.',
+    )
+  }
+
+  if (options.watch && options.crossCompile) {
+    throw new Error(
+      '`--watch` cannot be used with `--cross-compile` (`-x`). `cargo watch` only supports the plain `cargo build` flow, please drop one of the two flags.',
+    )
+  }
+
+  if (options.crossCompile) {
+    const explicitTarget = options.target ?? process.env.CARGO_BUILD_TARGET
+    if (explicitTarget) {
+      // `cargo zigbuild` and `cargo xwin` cannot consume a custom target
+      // spec file; only a plain `cargo build` can.
+      if (explicitTarget.endsWith('.json')) {
+        throw new Error(
+          `\`--cross-compile\` (\`-x\`) does not support custom target spec files (${explicitTarget}). Drop \`-x\` and build with plain \`cargo build\`, which accepts \`--target <spec>.json\` natively.`,
+        )
+      }
+      const target = parseTriple(explicitTarget)
+      // Only `cargo zigbuild` splits a versioned `--target` at the first
+      // dot. Win32 targets are never routed there: a non-Windows host runs
+      // `cargo xwin build` and a Windows host falls back to plain
+      // `cargo build`, and both forward the spelling to Cargo verbatim.
+      if (target.platform === 'win32' && explicitTarget.includes('.')) {
+        throw new Error(
+          `\`--cross-compile\` (\`-x\`) does not support the versioned target ${explicitTarget}: Windows targets do not go through \`cargo zigbuild\`, so the suffix reaches Cargo verbatim and Cargo rejects it. Drop the suffix and use ${cargoTargetTriple(explicitTarget)} instead.`,
+        )
+      }
+      // On a Windows host `--cross-compile` never picks `cargo-xwin` (it
+      // falls back to a plain `cargo build`), so windows-gnu targets are
+      // only broken on non-Windows hosts.
+      if (
+        hostPlatform !== 'win32' &&
+        target.platform === 'win32' &&
+        target.abi?.startsWith('gnu')
+      ) {
+        const msvcTriple = explicitTarget.replace(/gnu(llvm)?$/, 'msvc')
+        // `*-windows-gnu` links with a mingw-w64 GCC toolchain, while
+        // `*-windows-gnullvm` needs an LLVM toolchain (llvm-mingw): `rustc`
+        // has no default working linker for it without one on the `PATH`.
+        const toolchainHint =
+          target.abi === 'gnullvm'
+            ? `an llvm-mingw (LLVM/Clang) toolchain on the \`PATH\` (\`rustc\` has no default working linker for ${explicitTarget} without one; \`napi-build\` additionally needs \`libnode.dll\` via the \`LIBNODE_PATH\` environment variable)`
+            : `a mingw-w64 toolchain (\`rustc\` uses the \`${explicitTarget.split('-')[0]}-w64-mingw32-gcc\` linker; \`napi-build\` additionally needs \`libnode.dll\` via the \`LIBNODE_PATH\` environment variable)`
+        throw new Error(
+          `\`--cross-compile\` (\`-x\`) does not support the target ${explicitTarget}: \`cargo-xwin\` only handles MSVC targets and the build would fail at link time. Drop \`-x\` and build with ${toolchainHint}, or target ${msvcTriple} instead.`,
+        )
+      }
+    }
+  }
+}
+
+/**
+ * Validate that the current host can run the `@napi-rs/cross-toolchain`
+ * pre-built toolchains at all: they only run on Linux x64 and Linux arm64
+ * hosts. This check is separate from (and must run before) the per-target
+ * validation, because resolving the target may need to spawn `rustc`.
+ */
+function validateNapiCrossHost(
+  hostPlatform: string = process.platform,
+  hostArch: string = process.arch,
+): asserts hostArch is 'x64' | 'arm64' {
+  if (
+    hostPlatform !== 'linux' ||
+    (hostArch !== 'x64' && hostArch !== 'arm64')
+  ) {
+    throw new Error(
+      `\`--use-napi-cross\` requires a Linux x64 or Linux arm64 host, but the current host is ${hostPlatform}-${hostArch}. Please use \`--cross-compile\` (\`-x\`) or \`--use-cross\` to cross compile on this host.`,
+    )
+  }
+}
+
+/**
+ * Validate that `--use-napi-cross` can actually handle the requested target
+ * on the current host. The supported target set is read from the
+ * `@napi-rs/cross-toolchain` package, and the pre-built toolchains only run
+ * on Linux x64 and Linux arm64 hosts.
+ */
+export function validateNapiCrossSupport(
+  targetTriple: string,
+  hostPlatform: string = process.platform,
+  hostArch: string = process.arch,
+): void {
+  validateNapiCrossHost(hostPlatform, hostArch)
+
+  const toolchains: Record<
+    'x64' | 'arm64',
+    Record<string, string | undefined>
+  > = require('@napi-rs/cross-toolchain')
+  const supportedTargets = Object.keys(toolchains[hostArch])
+
+  if (!supportedTargets.includes(targetTriple)) {
+    throw new Error(
+      `\`--use-napi-cross\` does not support the target ${targetTriple}. Supported targets: ${supportedTargets.join(', ')}. Please use \`--cross-compile\` (\`-x\`) or \`--use-cross\` for this target.`,
+    )
+  }
+}
+
+/**
+ * Compute the environment variables that route a `--use-napi-cross` build
+ * through the `@napi-rs/cross-toolchain` toolchain extracted at
+ * `toolchainPath`.
+ *
+ * Follows the same rule as `Builder#setEnvIfNotExists`: a variable the user
+ * already set in `env` wins and is not returned, and a present-but-empty
+ * variable counts as unset (falsy semantics). The only exceptions are the
+ * clang-specific `TARGET_CFLAGS`/`TARGET_CXXFLAGS`, which prepend the sysroot
+ * flags to the user's value, and `PATH`, which always gets the toolchain
+ * `bin` directory prepended.
+ *
+ * Exported for tests.
+ */
+export function napiCrossToolchainEnvs(
+  toolchainPath: string,
+  targetTriple: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const alias: Record<string, string> = {
+    's390x-unknown-linux-gnu': 's390x-ibm-linux-gnu',
+  }
+
+  const envs: Record<string, string> = {}
+  const setEnvIfNotExists = (name: string, value: string) => {
+    if (!env[name]) {
+      envs[name] = value
+    }
+  }
+
+  const upperCaseTarget = targetToEnvVar(targetTriple)
+  const crossTargetName = alias[targetTriple] ?? targetTriple
+  setEnvIfNotExists(
+    `CARGO_TARGET_${upperCaseTarget}_LINKER`,
+    join(toolchainPath, 'bin', `${crossTargetName}-gcc`),
+  )
+  setEnvIfNotExists(
+    'TARGET_SYSROOT',
+    join(toolchainPath, crossTargetName, 'sysroot'),
+  )
+  setEnvIfNotExists(
+    'TARGET_AR',
+    join(toolchainPath, 'bin', `${crossTargetName}-ar`),
+  )
+  setEnvIfNotExists(
+    'TARGET_RANLIB',
+    join(toolchainPath, 'bin', `${crossTargetName}-ranlib`),
+  )
+  setEnvIfNotExists(
+    'TARGET_READELF',
+    join(toolchainPath, 'bin', `${crossTargetName}-readelf`),
+  )
+  setEnvIfNotExists(
+    'TARGET_C_INCLUDE_PATH',
+    join(toolchainPath, crossTargetName, 'sysroot', 'usr', 'include/'),
+  )
+  setEnvIfNotExists(
+    'TARGET_CC',
+    join(toolchainPath, 'bin', `${crossTargetName}-gcc`),
+  )
+  setEnvIfNotExists(
+    'TARGET_CXX',
+    join(toolchainPath, 'bin', `${crossTargetName}-g++`),
+  )
+  // `setEnvIfNotExists` skips `envs` when the user already set the variable
+  // in their environment, so read the effective value back from `env` first
+  // — with the same falsy semantics: a present-but-empty `TARGET_SYSROOT`
+  // counts as unset and falls back to the downloaded sysroot (`??` would
+  // keep the empty string and produce a broken `--sysroot=`).
+  const targetSysroot = env.TARGET_SYSROOT || envs.TARGET_SYSROOT
+  setEnvIfNotExists('BINDGEN_EXTRA_CLANG_ARGS', `--sysroot=${targetSysroot}`)
+
+  // cc-rs parses the env value before executing it (`env_tool` in cc's
+  // lib.rs): when the WHOLE value exists on the filesystem (`check_exe`)
+  // it is the compiler as-is — that is how it supports spaces in paths
+  // like `/opt/LLVM 18/bin/clang` — and only otherwise is the value split
+  // on whitespace; then, when the first token is a known wrapper
+  // (`sccache clang`) the second token is the compiler that actually runs,
+  // otherwise the first token is and the rest are arguments
+  // (`clang -target …`). Mirror that ordering, filesystem probe included:
+  // a pure whole-value basename heuristic would misread argument forms
+  // that merely END in `clang`, like `gcc --sysroot=/opt/clang`, and
+  // inject clang-only flags into a gcc compile. Match on the executable
+  // name so path-qualified (`/usr/bin/clang`), triple-prefixed
+  // (`aarch64-linux-gnu-clang`) and versioned (`clang-18`) compilers are
+  // all recognized — but not clang-family tools that are not compilers
+  // (`clang-format`).
+  const ccWrappers = new Set([
+    'ccache',
+    'distcc',
+    'sccache',
+    'icecc',
+    'cachepot',
+    'buildcache',
+    'kache',
+  ])
+  const clangExecutableName = /(^|-)clang(\+\+)?(-\d+)?$/
+  // cc-rs's `check_exe` only probes for existence (plus an `.exe` retry on
+  // Windows, where this napi-cross path never runs); requiring a regular
+  // file additionally keeps directories from being taken for compilers.
+  const isExistingFile = (path: string): boolean => {
+    try {
+      return statSync(path, { throwIfNoEntry: false })?.isFile() ?? false
+    } catch {
+      return false
+    }
+  }
+  const isClangCompiler = (value: string | undefined): boolean => {
+    if (!value) {
+      return false
+    }
+    const trimmed = value.trim()
+    if (isExistingFile(trimmed)) {
+      return clangExecutableName.test(basename(trimmed))
+    }
+    const [first, second] = trimmed.split(/\s+/)
+    const compiler = first && ccWrappers.has(basename(first)) ? second : first
+    return (
+      compiler !== undefined && clangExecutableName.test(basename(compiler))
+    )
+  }
+
+  // Detect clang on the EFFECTIVE target compiler: the user's TARGET_CC if
+  // set, otherwise the toolchain gcc exported above (`envs.TARGET_CC`).
+  // cc-rs prefers TARGET_CC over CC for cross builds, so a plain `CC=clang`
+  // never runs here and must not trigger the clang-only `--gcc-toolchain=`
+  // flag (gcc hard-errors on it). The trailing `env.CC`/`env.CXX` terms are
+  // unreachable today (exactly one of the first two is always truthy) but
+  // keep the check correct if the toolchain default ever becomes conditional.
+  if (isClangCompiler(env.TARGET_CC || envs.TARGET_CC || env.CC)) {
+    const TARGET_CFLAGS = env.TARGET_CFLAGS || ''
+    envs.TARGET_CFLAGS = `--sysroot=${targetSysroot} --gcc-toolchain=${toolchainPath} ${TARGET_CFLAGS}`
+  }
+  if (isClangCompiler(env.TARGET_CXX || envs.TARGET_CXX || env.CXX)) {
+    const TARGET_CXXFLAGS = env.TARGET_CXXFLAGS || ''
+    envs.TARGET_CXXFLAGS = `--sysroot=${targetSysroot} --gcc-toolchain=${toolchainPath} ${TARGET_CXXFLAGS}`
+  }
+  envs.PATH = env.PATH
+    ? `${toolchainPath}/bin:${env.PATH}`
+    : `${toolchainPath}/bin`
+  return envs
+}
+
+class Builder {
+  private readonly args: string[] = []
+  private readonly envs: Record<string, string> = {}
+  private readonly outputs: Output[] = []
+
+  private readonly target: Target
+  /**
+   * The triple Cargo actually compiles to. When `--cross-compile` routes
+   * the build through `cargo zigbuild`, cargo-zigbuild splits
+   * `x86_64-unknown-linux-gnu.2.27` at the first dot: Cargo builds
+   * `x86_64-unknown-linux-gnu` and only zig sees the suffix, so
+   * Cargo-facing paths and env keys use the base triple while `this.target`
+   * keeps the requested spelling for `zigbuild --target`.
+   */
+  private readonly cargoTriple: string
+  private readonly crateDir: string
+  private readonly finalOutputDir: string
+  private outputDir: string
+  private readonly reconciliationRoot: string
+  private readonly targetDir: string
+  private readonly enableTypeDef: boolean = false
+  private readonly stagedOutputDestinations = new Map<string, string>()
+  private typeDefWithTypeImports: string | undefined
+  /**
+   * The `.d.ts` header this build rendered, so `writeWasiBindingForTarget` can
+   * tell a `__napiBindingTarget` declaration the header owns from one typegen
+   * wrote. `undefined` until typegen runs, and for a build with no typegen.
+   */
+  private typeDefRenderedHeader: string | undefined
+
+  constructor(
+    private readonly metadata: CargoWorkspaceMetadata,
+    private readonly crate: Crate,
+    private readonly config: NapiConfig,
+    private readonly options: ParsedBuildOptions,
+  ) {
+    const requested = resolveTarget(options.target)
+    // `cargo zigbuild` is only the `-x` route for non-Windows targets —
+    // win32 ones go to `cargo xwin` (or plain `cargo build` on a Windows
+    // host), which forward `--target` verbatim — so only the zigbuild route
+    // splits the requested spelling.
+    this.cargoTriple =
+      options.crossCompile && requested.platform !== 'win32'
+        ? cargoTargetTriple(requested.triple)
+        : requested.triple
+    // Platform/arch/abi describe the triple Cargo compiles, so artifact
+    // names, `--platform` naming, and platform dispatch agree with the
+    // directory Cargo writes to. Only the zigbuild suffix needs this —
+    // every other build mode passes the requested triple verbatim.
+    this.target =
+      this.cargoTriple === requested.triple
+        ? requested
+        : { ...parseTriple(this.cargoTriple), triple: requested.triple }
+    this.crateDir = parse(crate.manifest_path).dir
+    this.finalOutputDir = resolve(
+      this.options.cwd,
+      options.outputDir ?? this.crateDir,
+    )
+    this.outputDir = this.finalOutputDir
+    this.reconciliationRoot = getPackageReconciliationRoot(
+      this.options.cwd,
+      this.options.packageJsonPath,
+    )
+    this.targetDir =
+      options.targetDir ??
+      process.env.CARGO_BUILD_TARGET_DIR ??
+      metadata.target_directory
+    this.enableTypeDef = this.crate.dependencies.some(
+      (dep) =>
+        dep.name === 'napi-derive' &&
+        (dep.uses_default_features || dep.features.includes('type-def')),
+    )
+
+    if (!this.enableTypeDef) {
+      const requirementWarning =
+        '`napi-derive` crate is not used or `type-def` feature is not enabled for `napi-derive` crate'
+      debug.warn(
+        `${requirementWarning}. Will skip binding generation for \`.node\`, \`.wasi\` and \`.d.ts\` files.`,
+      )
+
+      if (
+        this.options.dts ||
+        this.options.dtsHeader ||
+        this.config.dtsHeader ||
+        this.config.dtsHeaderFile
+      ) {
+        debug.warn(
+          `${requirementWarning}. \`dts\` related options are enabled but will be ignored.`,
+        )
+      }
+    }
+  }
+
+  get cdyLibName() {
+    if (this.options.bin) {
+      return
+    }
+    return this.crate.targets.find((t) => t.crate_types.includes('cdylib'))
+      ?.name
+  }
+
+  get binName() {
+    return (
+      this.options.bin ??
+      // only available if not cdylib or bin name specified
+      (this.cdyLibName
+        ? null
+        : this.crate.targets.find((t) => t.crate_types.includes('bin'))?.name)
+    )
+  }
+
+  async build() {
+    // Backstop only: `buildProject()` already validated these before running
+    // anything with a side effect (see the top of `buildProject`). Kept here
+    // so a directly constructed `Builder` cannot skip the validation.
+    validateCrossCompileFlags(this.options)
+    if (this.options.useNapiCross) {
+      validateNapiCrossSupport(this.target.triple)
+    }
+
+    if (this.options.bin) {
+      debug.warn(
+        `Building Cargo binary target ${this.binName}; the result will be an executable, not a Node.js addon.`,
+      )
+    } else if (!this.cdyLibName) {
+      const warning =
+        'Missing `crate-type = ["cdylib"]` in [lib] config. The build result will not be available as node addon.'
+
+      if (this.binName) {
+        debug.warn(warning)
+      } else {
+        throw new Error(warning)
+      }
+    }
+
+    this.pickBinary()
+      .setPackage()
+      .setFeatures()
+      .setTarget()
+      .pickCrossToolchain()
+    await this.setEnvs()
+    return this.setBypassArgs().exec()
+  }
+
+  private pickCrossToolchain() {
+    if (!this.options.useNapiCross) {
+      return this
+    }
+
+    try {
+      const { version, download } = require('@napi-rs/cross-toolchain')
+
+      const toolchainPath = join(
+        homedir(),
+        '.napi-rs',
+        'cross-toolchain',
+        version,
+        this.target.triple,
+      )
+      mkdirSync(toolchainPath, { recursive: true })
+      if (existsSync(join(toolchainPath, 'package.json'))) {
+        debug(`Toolchain ${toolchainPath} exists, skip extracting`)
+      } else {
+        const tarArchive = download(process.arch, this.target.triple)
+        tarArchive.unpack(toolchainPath)
+      }
+      Object.assign(
+        this.envs,
+        napiCrossToolchainEnvs(toolchainPath, this.target.triple),
+      )
+    } catch (e) {
+      throw new Error(
+        `Failed to set up the \`--use-napi-cross\` toolchain for ${this.target.triple}: ${(e as Error).message}. Check filesystem permissions and network connectivity to the npm registry, then retry, or use \`--cross-compile\` (\`-x\`) / \`--use-cross\` instead.`,
+        { cause: e },
+      )
+    }
+    return this
+  }
+
+  private exec() {
+    debug(`Start building crate: ${this.crate.name}`)
+    debug('  %i', `cargo ${this.args.join(' ')}`)
+
+    const controller = new AbortController()
+
+    const watch = this.options.watch
+    const buildTask = new Promise<void>((resolve, reject) => {
+      const cargoOverride = process.env.CARGO
+      if (
+        cargoOverride &&
+        (this.options.useCross || this.options.crossCompile)
+      ) {
+        const expectedBinary = this.options.useCross ? 'cross' : 'cargo'
+        const requestedFlag = this.options.useCross
+          ? '`--use-cross`'
+          : '`--cross-compile` (`-x`)'
+        debug.warn(
+          `The \`CARGO\` environment variable is set to \`${cargoOverride}\`; it will be spawned instead of the \`${expectedBinary}\` binary that ${requestedFlag} relies on. Unset \`CARGO\` if this is not intended.`,
+        )
+      }
+      const command =
+        cargoOverride ?? (this.options.useCross ? 'cross' : 'cargo')
+      const buildProcess = spawn(command, this.args, {
+        env: { ...process.env, ...this.envs },
+        stdio: watch ? ['inherit', 'inherit', 'pipe'] : 'inherit',
+        cwd: this.options.cwd,
+        signal: controller.signal,
+      })
+
+      buildProcess.once('exit', (code) => {
+        if (code === 0) {
+          debug('%i', `Build crate ${this.crate.name} successfully!`)
+          resolve()
+        } else {
+          reject(new Error(`Build failed with exit code ${code}`))
+        }
+      })
+
+      buildProcess.once('error', (e) => {
+        reject(new Error(`Build failed with error: ${e.message}`, { cause: e }))
+      })
+
+      // watch mode only, they are piped through stderr
+      buildProcess.stderr?.on('data', (data) => {
+        const output = data.toString()
+        console.error(output)
+        if (/Finished\s(`dev`|`release`)/.test(output)) {
+          this.postBuild().catch(() => {})
+        }
+      })
+    })
+
+    return {
+      task: buildTask.then(() => this.postBuild()),
+      abort: () => controller.abort(),
+    }
+  }
+
+  private async collectStaleBuildOutputPaths() {
+    const stalePaths = new Set<string>()
+    const managedRootEntries = await this.readManagedWasiRootEntries()
+
+    for (const name of collectStaleWasiBuildOutputNames(
+      this.config.binaryName,
+      this.target,
+      this.config.targets,
+    )) {
+      stalePaths.add(join(this.outputDir, name))
+    }
+    const hasWasiOutput =
+      this.target.platform === 'wasi' ||
+      this.config.targets.some((target) => target.platform === 'wasi') ||
+      managedRootEntries.size > 0
+    if (hasWasiOutput) {
+      stalePaths.add(join(this.outputDir, 'browser.js'))
+      stalePaths.add(join(this.outputDir, `${this.config.binaryName}.wasm`))
+      stalePaths.add(
+        join(this.outputDir, `${this.config.binaryName}.debug.wasm`),
+      )
+      if (this.options.platform && !this.options.noJsBinding) {
+        stalePaths.add(
+          join(this.outputDir, this.options.jsBinding ?? 'index.js'),
+        )
+      }
+    }
+    for (const entry of managedRootEntries) {
+      stalePaths.add(
+        resolveManagedOutputPath(this.outputDir, entry, 'WASI root entry'),
+      )
+    }
+
+    return stalePaths
+  }
+
+  private async unlinkIfExists(path: string) {
+    try {
+      await unlinkAsync(path)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error
+      }
+    }
+  }
+
+  private async readManagedWasiRootEntries() {
+    const entries = new Set<string>()
+    for (const { loaderSuffix } of MANAGED_WASI_FLAVORS) {
+      const path = join(
+        this.outputDir,
+        `${this.config.binaryName}.${loaderSuffix}.cjs`,
+      )
+      if (!(await fileExists(path))) {
+        continue
+      }
+      const metadata = parseExistingWasiArtifactMetadata(
+        await readFileAsync(path, 'utf8'),
+      )
+      for (const entry of metadata?.managedRootEntries ?? []) {
+        entries.add(entry)
+      }
+    }
+    return entries
+  }
+
+  /**
+   * Whether {@link Builder.writeWasiBinding} will actually write a WASI loader
+   * set. A declared WASI target is not enough: a non-WASI build only
+   * regenerates the flavors whose previous loader metadata is still on disk and
+   * skips the rest, so a configured-but-never-built flavor leaves no loader to
+   * carry `__napiBindingTarget`.
+   *
+   * Safe to call from {@link Builder.generateTypeDef}: the metadata probe reads
+   * `finalOutputDir`, which the staging swap never touches, and nothing writes
+   * those files between this probe and `writeWasiBinding`.
+   */
+  private async willEmitWasiLoader() {
+    if (this.target.platform === 'wasi') {
+      return true
+    }
+    for (const wasiTarget of this.config.targets.filter(
+      (target) => target.platform === 'wasi',
+    )) {
+      if (await this.readExistingWasiBindingMetadata(wasiTarget)) {
+        return true
+      }
+    }
+    return false
+  }
+
+  private async readExistingWasiBindingMetadata(wasiTarget: Target) {
+    const loaderSuffix = wasiLoaderSuffix(wasiTarget.platformArchABI)
+    const bindingPath = join(
+      this.finalOutputDir,
+      `${this.config.binaryName}.${loaderSuffix}.cjs`,
+    )
+    const bindingTypeDefPath = join(
+      this.finalOutputDir,
+      `${this.config.binaryName}.${loaderSuffix}.d.cts`,
+    )
+    if (
+      !(await fileExists(bindingPath)) ||
+      !(await fileExists(bindingTypeDefPath))
+    ) {
+      return undefined
+    }
+    const artifactMetadata = parseExistingWasiArtifactMetadata(
+      await readFileAsync(bindingPath, 'utf8'),
+    )
+    if (artifactMetadata?.exports === undefined) {
+      return undefined
+    }
+    return {
+      exports: artifactMetadata.exports,
+      bindingTypeDef: await readFileAsync(bindingTypeDefPath, 'utf8'),
+    }
+  }
+
+  private pickBinary() {
+    let set = false
+    if (this.options.watch) {
+      if (process.env.CI) {
+        debug.warn('Watch mode is not supported in CI environment')
+      } else {
+        debug('Use %i', 'cargo-watch')
+        tryInstallCargoBinary('cargo-watch', 'watch')
+        // yarn napi watch --target x86_64-unknown-linux-gnu
+        // ===>
+        // cargo watch [...] -- cargo build --target x86_64-unknown-linux-gnu
+        this.args.push(
+          'watch',
+          '--why',
+          '-i',
+          '*.{js,ts,node}',
+          '-w',
+          this.crateDir,
+          '--',
+          'cargo',
+          'build',
+        )
+        set = true
+      }
+    }
+
+    if (this.options.crossCompile) {
+      if (this.target.platform === 'win32') {
+        if (process.platform === 'win32') {
+          debug.warn(
+            'You are trying to cross compile to win32 platform on win32 platform which is unnecessary.',
+          )
+        } else {
+          // use cargo-xwin to cross compile to win32 platform
+          debug('Use %i', 'cargo-xwin')
+          tryInstallCargoBinary('cargo-xwin', 'xwin')
+          this.args.push('xwin', 'build')
+          if (this.target.arch === 'ia32') {
+            this.envs.XWIN_ARCH = 'x86'
+          }
+          set = true
+        }
+      } else {
+        // use cargo-zigbuild to cross compile to other platforms
+        debug('Use %i', 'cargo-zigbuild')
+        tryInstallCargoBinary('cargo-zigbuild', 'zigbuild')
+        this.args.push('zigbuild')
+        set = true
+      }
+    }
+
+    if (!set) {
+      this.args.push('build')
+    }
+    return this
+  }
+
+  private setPackage() {
+    const args = []
+
+    if (this.options.package) {
+      args.push('--package', this.options.package)
+    }
+
+    if (this.binName) {
+      args.push('--bin', this.binName)
+    }
+
+    if (args.length) {
+      debug('Set package flags: ')
+      debug('  %O', args)
+      this.args.push(...args)
+    }
+
+    return this
+  }
+
+  private setTarget() {
+    debug('Set compiling target to: ')
+    debug('  %i', this.target.triple)
+
+    this.args.push('--target', this.target.triple)
+
+    return this
+  }
+
+  private async setEnvs() {
+    // RUSTFLAGS
+    let rustflags =
+      process.env.RUSTFLAGS ?? process.env.CARGO_BUILD_RUSTFLAGS ?? ''
+
+    if (
+      this.target.abi?.includes('musl') &&
+      !rustflags.includes('target-feature=-crt-static')
+    ) {
+      rustflags += ' -C target-feature=-crt-static'
+    }
+
+    if (this.options.strip && !rustflags.includes('link-arg=-s')) {
+      rustflags += ' -C link-arg=-s'
+    }
+
+    // TYPE DEF
+    if (this.enableTypeDef) {
+      this.envs.NAPI_TYPE_DEF_TMP_FOLDER =
+        await this.generateIntermediateTypeDefFolder(rustflags)
+      this.setForceBuildEnvs(this.envs.NAPI_TYPE_DEF_TMP_FOLDER)
+    }
+
+    if (rustflags.length) {
+      this.envs.RUSTFLAGS = rustflags
+    }
+    // END RUSTFLAGS
+
+    // LINKER
+    const linker = this.options.crossCompile
+      ? void 0
+      : getTargetLinker(this.cargoTriple)
+    // TODO:
+    //   directly set CARGO_TARGET_<target>_LINKER will cover .cargo/config.toml
+    //   will detect by cargo config when it becomes stable
+    //   see: https://github.com/rust-lang/cargo/issues/9301
+    const linkerEnv = `CARGO_TARGET_${targetToEnvVar(this.cargoTriple)}_LINKER`
+    if (linker && !process.env[linkerEnv] && !this.envs[linkerEnv]) {
+      this.envs[linkerEnv] = linker
+    }
+
+    if (this.target.platform === 'android') {
+      this.setAndroidEnv()
+    }
+
+    if (this.target.platform === 'wasi') {
+      this.setWasiEnv()
+    }
+
+    if (this.target.platform === 'openharmony') {
+      this.setOpenHarmonyEnv()
+    }
+
+    debug('Set envs: ')
+    Object.entries(this.envs).forEach(([k, v]) => {
+      debug('  %i', `${k}=${v}`)
+    })
+
+    return this
+  }
+
+  private setForceBuildEnvs(typeDefTmpFolder: string) {
+    // dynamically check all napi-rs deps and set `NAPI_FORCE_BUILD_{uppercase(snake_case(name))} = timestamp`
+    getNapiDeriveDependentCrates(this.metadata).forEach((crate) => {
+      if (!existsSync(join(typeDefTmpFolder, crate.name))) {
+        this.envs[
+          `NAPI_FORCE_BUILD_${crate.name.replace(/-/g, '_').toUpperCase()}`
+        ] = Date.now().toString()
+      }
+    })
+  }
+
+  private setAndroidEnv() {
+    // Native Android hosts, `cross`, and `cargo zigbuild` (`zig cc` links,
+    // no NDK involved) provide their own Android toolchains.
+    if (
+      process.platform === 'android' ||
+      this.options.useCross ||
+      this.options.crossCompile
+    ) {
+      return
+    }
+
+    const { ANDROID_NDK_LATEST_HOME } = process.env
+    if (!ANDROID_NDK_LATEST_HOME) {
+      throw new Error(
+        `${colors.red(
+          'ANDROID_NDK_LATEST_HOME',
+        )} environment variable is required when building an Android target from a non-Android host`,
+      )
+    }
+
+    const targetArch = this.target.arch === 'arm' ? 'armv7a' : 'aarch64'
+    const targetPlatform =
+      this.target.arch === 'arm' ? 'androideabi24' : 'android24'
+    const hostPlatform =
+      process.platform === 'darwin'
+        ? 'darwin'
+        : process.platform === 'win32'
+          ? 'windows'
+          : 'linux'
+    Object.assign(this.envs, {
+      CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: `${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/${hostPlatform}-x86_64/bin/${targetArch}-linux-android24-clang`,
+      CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER: `${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/${hostPlatform}-x86_64/bin/${targetArch}-linux-androideabi24-clang`,
+      TARGET_CC: `${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/${hostPlatform}-x86_64/bin/${targetArch}-linux-${targetPlatform}-clang`,
+      TARGET_CXX: `${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/${hostPlatform}-x86_64/bin/${targetArch}-linux-${targetPlatform}-clang++`,
+      TARGET_AR: `${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/${hostPlatform}-x86_64/bin/llvm-ar`,
+      TARGET_RANLIB: `${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/${hostPlatform}-x86_64/bin/llvm-ranlib`,
+      ANDROID_NDK: ANDROID_NDK_LATEST_HOME,
+      PATH: `${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/${hostPlatform}-x86_64/bin${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
+    })
+  }
+
+  private setWasiEnv() {
+    const hasThreads = wasiTargetHasThreads(this.target)
+    const wasiTarget = hasThreads ? 'wasm32-wasip1-threads' : 'wasm32-wasip1'
+    const emnapiLibDir = join(require.resolve('emnapi'), '..', 'lib')
+    const emnapiVersion = require('emnapi/package.json').version
+    const { WASI_SDK_PATH } = process.env
+    // `wasiTarget` stays the real target triple, because it is what the clang
+    // driver is told to build for below. The emnapi archive directory is a
+    // separate choice: emnapi ships two archive sets for the threaded target,
+    // one per wasi-libc futex ABI. See `selectEmnapiLinkDir`.
+    const { linkDirName, wasiSdkMajor, needsWasiSdk34 } = selectEmnapiLinkDir(
+      emnapiLibDir,
+      wasiTarget,
+      hasThreads,
+      WASI_SDK_PATH,
+      { cwd: this.options.cwd },
+    )
+    const emnapi = join(emnapiLibDir, linkDirName)
+    // Keep this in sync with `emnapi_link_library` in `crates/build/src/wasi.rs`.
+    const emnapiArchive = join(
+      emnapi,
+      hasThreads ? 'libemnapi-napi-rs-mt.a' : 'libemnapi-basic-napi-rs.a',
+    )
+    const fellBackToLegacy =
+      needsWasiSdk34 && linkDirName !== EMNAPI_WASI_SDK_34_LINK_DIR
+    if (!existsSync(emnapiArchive)) {
+      throw new Error(
+        fellBackToLegacy
+          ? `emnapi@${emnapiVersion} does not ship the ${EMNAPI_WASI_SDK_34_LINK_DIR} archives that wasi-sdk ${wasiSdkMajor} requires, and the ${linkDirName} archive it fell back to is missing too at ${emnapiArchive}. Upgrade emnapi to a version that ships the wasi-sdk 34 archives.`
+          : needsWasiSdk34
+            ? `emnapi@${emnapiVersion} is missing the ${linkDirName} archive required by napi-rs at ${emnapiArchive}. wasi-sdk ${wasiSdkMajor} needs those archives, so upgrade emnapi to a version that ships them.`
+            : `emnapi@${emnapiVersion} is missing the ${linkDirName} archive required by napi-rs at ${emnapiArchive}. Install emnapi v2 with support for this target.`,
+      )
+    }
+    if (fellBackToLegacy) {
+      debug.warn(
+        `emnapi@${emnapiVersion} does not ship the ${EMNAPI_WASI_SDK_34_LINK_DIR} archives that wasi-sdk ${wasiSdkMajor} requires. Falling back to ${linkDirName}, which links the legacy wasi-libc futex ABI and may fail with \`wasm-ld: function signature mismatch\`. Upgrade emnapi to fix this.`,
+      )
+    }
+    this.envs.EMNAPI_LINK_DIR = emnapi
+    const projectRequire = createRequire(
+      resolve(this.options.cwd, 'package.json'),
+    )
+    const projectPackageVersion = (name: string): string => {
+      try {
+        return projectRequire(`${name}/package.json`).version
+      } catch {
+        // emnapi v1 packages do not list `./package.json` in their export
+        // maps, so fall back to the module's own `version` export to keep the
+        // descriptive version-mismatch error below reachable for stale
+        // installs instead of a bare ERR_PACKAGE_PATH_NOT_EXPORTED.
+        return projectRequire(name).version
+      }
+    }
+    const emnapiCoreVersion = projectPackageVersion('@emnapi/core')
+    const emnapiRuntimeVersion = projectPackageVersion('@emnapi/runtime')
+
+    if (
+      emnapiVersion !== emnapiCoreVersion ||
+      emnapiVersion !== emnapiRuntimeVersion
+    ) {
+      throw new Error(
+        `emnapi version mismatch: emnapi@${emnapiVersion}, @emnapi/core@${emnapiCoreVersion}, @emnapi/runtime@${emnapiRuntimeVersion}. Please ensure all emnapi packages are the same version.`,
+      )
+    }
+
+    if (WASI_SDK_PATH && existsSync(WASI_SDK_PATH)) {
+      this.envs.CARGO_TARGET_WASM32_WASI_PREVIEW1_THREADS_LINKER = join(
+        WASI_SDK_PATH,
+        'bin',
+        'wasm-ld',
+      )
+      this.envs.CARGO_TARGET_WASM32_WASIP1_LINKER = join(
+        WASI_SDK_PATH,
+        'bin',
+        'wasm-ld',
+      )
+      this.envs.CARGO_TARGET_WASM32_WASIP1_THREADS_LINKER = join(
+        WASI_SDK_PATH,
+        'bin',
+        'wasm-ld',
+      )
+      this.envs.CARGO_TARGET_WASM32_WASIP2_LINKER = join(
+        WASI_SDK_PATH,
+        'bin',
+        'wasm-ld',
+      )
+      this.setEnvIfNotExists('TARGET_CC', join(WASI_SDK_PATH, 'bin', 'clang'))
+      this.setEnvIfNotExists(
+        'TARGET_CXX',
+        join(WASI_SDK_PATH, 'bin', 'clang++'),
+      )
+      this.setEnvIfNotExists('TARGET_AR', join(WASI_SDK_PATH, 'bin', 'ar'))
+      this.setEnvIfNotExists(
+        'TARGET_RANLIB',
+        join(WASI_SDK_PATH, 'bin', 'ranlib'),
+      )
+      const { compileFlags, linkerFlags } = createWasiCompilerFlags(
+        WASI_SDK_PATH,
+        wasiTarget,
+        hasThreads,
+        process.env.CC_SHELL_ESCAPED_FLAGS
+          ? envBoolean(process.env.CC_SHELL_ESCAPED_FLAGS)
+          : true,
+      )
+      this.setEnvIfNotExists('CC_SHELL_ESCAPED_FLAGS', '1')
+      this.setEnvIfNotExists('TARGET_CFLAGS', compileFlags)
+      this.setEnvIfNotExists('TARGET_CXXFLAGS', compileFlags)
+      this.setEnvIfNotExists(`TARGET_LDFLAGS`, linkerFlags)
+    }
+  }
+
+  private setOpenHarmonyEnv() {
+    const { OHOS_SDK_PATH, OHOS_SDK_NATIVE } = process.env
+    const ndkPath = OHOS_SDK_PATH ? `${OHOS_SDK_PATH}/native` : OHOS_SDK_NATIVE
+    // @ts-expect-error
+    if (!ndkPath && process.platform !== 'openharmony') {
+      debug.warn(
+        `${colors.red('OHOS_SDK_PATH')} or ${colors.red('OHOS_SDK_NATIVE')} environment variable is missing`,
+      )
+      return
+    }
+    const linkerName = `CARGO_TARGET_${this.cargoTriple.toUpperCase().replace(/-/g, '_')}_LINKER`
+    const ranPath = `${ndkPath}/llvm/bin/llvm-ranlib`
+    const arPath = `${ndkPath}/llvm/bin/llvm-ar`
+    const ccPath = `${ndkPath}/llvm/bin/${this.cargoTriple}-clang`
+    const cxxPath = `${ndkPath}/llvm/bin/${this.cargoTriple}-clang++`
+    const asPath = `${ndkPath}/llvm/bin/llvm-as`
+    const ldPath = `${ndkPath}/llvm/bin/ld.lld`
+    const stripPath = `${ndkPath}/llvm/bin/llvm-strip`
+    const objDumpPath = `${ndkPath}/llvm/bin/llvm-objdump`
+    const objCopyPath = `${ndkPath}/llvm/bin/llvm-objcopy`
+    const nmPath = `${ndkPath}/llvm/bin/llvm-nm`
+    const binPath = `${ndkPath}/llvm/bin`
+    const libPath = `${ndkPath}/llvm/lib`
+
+    this.setEnvIfNotExists('LIBCLANG_PATH', libPath)
+    this.setEnvIfNotExists('DEP_ATOMIC', 'clang_rt.builtins')
+    this.setEnvIfNotExists(linkerName, ccPath)
+    this.setEnvIfNotExists('TARGET_CC', ccPath)
+    this.setEnvIfNotExists('TARGET_CXX', cxxPath)
+    this.setEnvIfNotExists('TARGET_AR', arPath)
+    this.setEnvIfNotExists('TARGET_RANLIB', ranPath)
+    this.setEnvIfNotExists('TARGET_AS', asPath)
+    this.setEnvIfNotExists('TARGET_LD', ldPath)
+    this.setEnvIfNotExists('TARGET_STRIP', stripPath)
+    this.setEnvIfNotExists('TARGET_OBJDUMP', objDumpPath)
+    this.setEnvIfNotExists('TARGET_OBJCOPY', objCopyPath)
+    this.setEnvIfNotExists('TARGET_NM', nmPath)
+    this.envs.PATH = `${binPath}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`
+  }
+
+  private setFeatures() {
+    const args = []
+    if (this.options.allFeatures && this.options.noDefaultFeatures) {
+      throw new Error(
+        'Cannot specify --all-features and --no-default-features together',
+      )
+    }
+    if (this.options.allFeatures) {
+      args.push('--all-features')
+    } else if (this.options.noDefaultFeatures) {
+      args.push('--no-default-features')
+    }
+    if (this.options.features) {
+      args.push('--features', ...this.options.features)
+    }
+
+    debug('Set features flags: ')
+    debug('  %O', args)
+    this.args.push(...args)
+
+    return this
+  }
+
+  private setBypassArgs() {
+    if (this.options.release) {
+      this.args.push('--release')
+    }
+
+    if (this.options.verbose) {
+      this.args.push('--verbose')
+    }
+
+    if (this.options.targetDir) {
+      this.args.push('--target-dir', this.options.targetDir)
+    }
+
+    if (this.options.profile) {
+      this.args.push('--profile', this.options.profile)
+    }
+
+    if (this.options.manifestPath) {
+      this.args.push('--manifest-path', this.options.manifestPath)
+    }
+
+    if (this.options.cargoOptions?.length) {
+      this.args.push(...this.options.cargoOptions)
+    }
+
+    return this
+  }
+
+  private async generateIntermediateTypeDefFolder(rustflags: string) {
+    const targetRustFlagsEnv = `CARGO_TARGET_${targetToEnvVar(
+      this.cargoTriple,
+    )}_RUSTFLAGS`
+    let folder = getTypeDefCacheFolder({
+      targetDir: this.targetDir,
+      crateName: this.crate.name,
+      manifestPath: this.crate.manifest_path,
+      targetTriple: this.cargoTriple,
+      profile:
+        this.options.profile ?? (this.options.release ? 'release' : 'dev'),
+      features: this.options.features,
+      allFeatures: this.options.allFeatures,
+      noDefaultFeatures: this.options.noDefaultFeatures,
+      cargoOptions: this.options.cargoOptions,
+      rustFlags: {
+        RUSTFLAGS: rustflags || undefined,
+        CARGO_ENCODED_RUSTFLAGS: process.env.CARGO_ENCODED_RUSTFLAGS,
+        CARGO_BUILD_RUSTFLAGS: process.env.CARGO_BUILD_RUSTFLAGS,
+        [targetRustFlagsEnv]: process.env[targetRustFlagsEnv],
+      },
+      cargoProfileEnv: Object.fromEntries(
+        Object.entries(process.env).filter(([name]) =>
+          name.startsWith('CARGO_PROFILE_'),
+        ),
+      ),
+      cargoConfig: this.getCargoConfigFingerprints(),
+      cargoDependencyGraph: getCargoDependencyGraphFingerprint(
+        this.metadata,
+        this.crate.id,
+      ),
+    })
+
+    if (!this.options.dtsCache) {
+      await mkdirAsync(dirname(folder), { recursive: true })
+      folder = await mkdtempAsync(`${folder}-`)
+    } else {
+      await mkdirAsync(folder, { recursive: true })
+    }
+
+    return folder
+  }
+
+  private getCargoConfigFingerprints(): CargoConfigFingerprint[] {
+    const configPaths = new Set<string>()
+    const addConfigIfPresent = (path: string) => {
+      if (existsSync(path) && statSync(path).isFile()) {
+        configPaths.add(path)
+      }
+    }
+    const addConfigDirectory = (directory: string) => {
+      addConfigIfPresent(join(directory, 'config.toml'))
+      addConfigIfPresent(join(directory, 'config'))
+    }
+
+    let currentDirectory = resolve(this.options.cwd)
+    while (true) {
+      addConfigDirectory(join(currentDirectory, '.cargo'))
+      const parentDirectory = dirname(currentDirectory)
+      if (parentDirectory === currentDirectory) {
+        break
+      }
+      currentDirectory = parentDirectory
+    }
+
+    addConfigDirectory(
+      process.env.CARGO_HOME
+        ? resolve(this.options.cwd, process.env.CARGO_HOME)
+        : join(homedir(), '.cargo'),
+    )
+
+    const cargoOptions = this.options.cargoOptions ?? []
+    for (let index = 0; index < cargoOptions.length; index++) {
+      const option = cargoOptions[index]
+      if (option === '--config') {
+        const value = cargoOptions[index + 1]
+        if (value) {
+          addConfigIfPresent(resolve(this.options.cwd, value))
+          index++
+        }
+      } else if (option.startsWith('--config=')) {
+        addConfigIfPresent(
+          resolve(this.options.cwd, option.slice('--config='.length)),
+        )
+      }
+    }
+
+    return [...configPaths]
+      .sort()
+      .map((path) => [
+        path,
+        createHash('sha256').update(readFileSync(path)).digest('hex'),
+      ])
+  }
+
+  private postBuild() {
+    return withFileSystemReconciliation(this.reconciliationRoot, () =>
+      this.postBuildUnlocked(),
+    )
+  }
+
+  private async postBuildUnlocked() {
+    const finalOutputDir = this.outputDir
+    try {
+      debug(`Try to create output directory:`)
+      debug('  %i', finalOutputDir)
+      await mkdirAsync(finalOutputDir, { recursive: true })
+      debug(`Output directory created`)
+    } catch (e) {
+      throw new Error(`Failed to create output directory ${finalOutputDir}`, {
+        cause: e,
+      })
+    }
+
+    const stalePaths = this.options.watch
+      ? new Set<string>()
+      : await this.collectStaleBuildOutputPaths()
+    const stagingDir = await mkdtempAsync(
+      join(dirname(finalOutputDir), `.${basename(finalOutputDir)}.napi-stage-`),
+    )
+    const outputStart = this.outputs.length
+    this.stagedOutputDestinations.clear()
+    this.outputDir = stagingDir
+
+    try {
+      const wasmBinaryName = await this.copyArtifact()
+
+      // only for cdylib
+      if (this.cdyLibName) {
+        const idents = await this.generateTypeDef()
+        const jsOutput = await this.writeJsBinding(idents)
+        const wasmBindingsOutput = await this.writeWasiBinding(
+          wasmBinaryName,
+          idents,
+        )
+        if (jsOutput) {
+          this.outputs.push(jsOutput)
+        }
+        if (wasmBindingsOutput) {
+          this.outputs.push(...wasmBindingsOutput)
+        }
+      }
+
+      const stagedFiles = await collectFilesRecursively(stagingDir)
+      const writes = [
+        ...stagedFiles
+          .filter((source) => !this.stagedOutputDestinations.has(source))
+          .map((source) => ({
+            source,
+            destination: join(finalOutputDir, relative(stagingDir, source)),
+          })),
+        ...[...this.stagedOutputDestinations].map(([source, destination]) => ({
+          source,
+          destination,
+        })),
+      ]
+      const writtenDestinations = new Set(
+        writes.map(({ destination }) => destination),
+      )
+      const transactionRoot = commonPathAncestor([
+        finalOutputDir,
+        ...writtenDestinations,
+        ...stalePaths,
+      ])
+      await commitFileSystemTransaction(
+        transactionRoot,
+        writes,
+        [...stalePaths].filter((path) => !writtenDestinations.has(path)),
+      )
+
+      const committedOutputs = this.outputs
+        .slice(outputStart)
+        .map((output) => ({
+          ...output,
+          path:
+            this.stagedOutputDestinations.get(output.path) ??
+            join(finalOutputDir, relative(stagingDir, output.path)),
+        }))
+      this.outputs.splice(
+        outputStart,
+        this.outputs.length - outputStart,
+        ...committedOutputs,
+      )
+      return this.outputs
+    } catch (error) {
+      this.outputs.splice(outputStart)
+      throw error
+    } finally {
+      this.outputDir = finalOutputDir
+      this.stagedOutputDestinations.clear()
+      await rm(stagingDir, { force: true, recursive: true })
+    }
+  }
+
+  private async copyArtifact() {
+    const [srcName, destName, wasmBinaryName] = this.getArtifactNames()
+    if (!srcName || !destName) {
+      return
+    }
+
+    const profile =
+      this.options.profile ?? (this.options.release ? 'release' : 'debug')
+    // Under `cargo zigbuild` the artifact lives under the part of
+    // `--target` before the first dot (`this.cargoTriple`), since the suffix
+    // only pins zig's libc/ABI version.
+    const src = join(this.targetDir, this.cargoTriple, profile, srcName)
+    debug(`Copy artifact from: [${src}]`)
+    const dest = join(this.outputDir, destName)
+    const isWasm = dest.endsWith('.wasm')
+    const debugDest = isWasm
+      ? dest.replace(/\.wasm$/, '.debug.wasm')
+      : undefined
+    let artifactReplaced = false
+
+    try {
+      debug('Copy artifact to:')
+      debug('  %i', dest)
+      if (isWasm) {
+        const { ModuleConfig } = await import('@napi-rs/wasm-tools')
+        debug('Generate debug wasm module')
+        try {
+          const debugWasmBinary = removeWasmCustomSection(
+            new ModuleConfig()
+              .generateDwarf(true)
+              .generateNameSection(true)
+              .generateProducersSection(true)
+              .preserveCodeTransform(true)
+              .strictValidate(false)
+              .parse(await readFileAsync(src))
+              .emitWasm(true),
+            'build_id',
+          )
+          await writeFileAtomic(debugDest!, debugWasmBinary)
+          debug('Generate release wasm module')
+          const releaseWasmBinary = removeWasmCustomSection(
+            new ModuleConfig()
+              .generateDwarf(false)
+              .generateNameSection(false)
+              .generateProducersSection(false)
+              .preserveCodeTransform(false)
+              .strictValidate(false)
+              .onlyStableFeatures(false)
+              .parse(debugWasmBinary)
+              .emitWasm(false),
+            'build_id',
+          )
+          await writeFileAtomic(dest, releaseWasmBinary)
+          artifactReplaced = true
+        } catch (e) {
+          debug.warn(
+            `Failed to generate debug wasm module: ${(e as any).message ?? e}`,
+          )
+          await this.unlinkIfExists(debugDest!)
+          await copyFileAtomic(src, dest)
+          artifactReplaced = true
+        }
+        if (this.target.platform === 'wasi') {
+          await verifyWasiReactor(dest)
+        }
+      } else {
+        await copyFileAtomic(src, dest)
+        artifactReplaced = true
+        // OpenHarmony devices refuse to load unsigned `.so` files, so inject
+        // the fs-verity `.codesign` self-signature unless `--no-ohos-sign`.
+        if (
+          this.target.platform === 'openharmony' &&
+          this.options.ohosSign !== false
+        ) {
+          debug('Self-signing OpenHarmony artifact:')
+          debug('  %i', dest)
+          try {
+            // Force mode: the OHOS SDK linker can already self-sign artifacts
+            // when its opt-in code-signing is enabled — strip that signature
+            // and re-sign rather than failing on the existing `.codesign`
+            // section.
+            signFileAtomic(dest, true)
+            // Re-verify the signature we just wrote so a corrupt or
+            // mis-injected `.codesign` section is surfaced immediately.
+            const { ok, reason } = checkSelfsign(readFileSync(dest))
+            if (!ok) {
+              debug.warn(
+                `OpenHarmony self-sign verification failed: ${dest}: ${reason}`,
+              )
+            }
+          } catch (e) {
+            // Self-signing is best-effort: HarmonyOS only ships on aarch64,
+            // and the algorithm (like the official binary-sign-tool) is only
+            // exercised against aarch64 artifacts — warn instead of failing
+            // the whole build when e.g. an x86_64 artifact cannot be signed.
+            // signElf rejects before writing anything, so `dest` still holds
+            // the copied artifact.
+            debug.warn(
+              `Skip OpenHarmony self-signing: ${dest}: ${(e as Error).message}`,
+            )
+          }
+        }
+      }
+      this.outputs.push({
+        kind: dest.endsWith('.node') ? 'node' : isWasm ? 'wasm' : 'exe',
+        path: dest,
+      })
+      return wasmBinaryName ? join(this.outputDir, wasmBinaryName) : null
+    } catch (e) {
+      if (artifactReplaced) {
+        await Promise.all(
+          [dest, debugDest]
+            .filter((path): path is string => path !== undefined)
+            .map((path) => this.unlinkIfExists(path)),
+        )
+      }
+      throw new Error('Failed to copy artifact', { cause: e })
+    }
+  }
+
+  private getArtifactNames() {
+    if (this.cdyLibName) {
+      const cdyLib = this.cdyLibName.replace(/-/g, '_')
+      // When building a wasi target, name the wasm artifact after the flavor
+      // being built (two wasi flavors may be declared side by side); for
+      // non-wasi builds fall back to the first declared wasi target so the
+      // loader set can still be regenerated deterministically.
+      const wasiTarget =
+        this.target.platform === 'wasi'
+          ? this.target
+          : this.config.targets.find((t) => t.platform === 'wasi')
+
+      const srcName =
+        this.target.platform === 'darwin'
+          ? `lib${cdyLib}.dylib`
+          : this.target.platform === 'win32'
+            ? `${cdyLib}.dll`
+            : this.target.platform === 'wasi' || this.target.platform === 'wasm'
+              ? `${cdyLib}.wasm`
+              : `lib${cdyLib}.so`
+
+      const destName = createArtifactDestinationName(
+        this.config.binaryName,
+        this.target,
+        srcName,
+        this.options.platform ?? false,
+      )
+
+      return [
+        srcName,
+        destName,
+        wasiTarget
+          ? `${this.config.binaryName}.${wasiTarget.platformArchABI}.wasm`
+          : null,
+      ]
+    } else if (this.binName) {
+      const srcName =
+        this.target.platform === 'win32' ? `${this.binName}.exe` : this.binName
+
+      return [srcName, srcName]
+    }
+
+    return []
+  }
+
+  private async generateTypeDef() {
+    const typeDefDir = this.envs.NAPI_TYPE_DEF_TMP_FOLDER
+    if (!this.enableTypeDef) {
+      return []
+    }
+
+    // Declare the loader export only for builds that actually emit a loader:
+    // the native root loader (`--platform` without `--no-js-binding`) or a WASI
+    // flavor loader set this build writes. Whether the root loader is written
+    // also depends on the exports typegen is about to produce, so the decision
+    // travels as a predicate — see `bindingTargetDeclarationPredicate`.
+    const declareBindingTarget = bindingTargetDeclarationPredicate({
+      rootLoaderCandidate:
+        Boolean(this.options.platform) && !this.options.noJsBinding,
+      // the same fallback list `writeJsBinding` is handed
+      hasWasiFallback: this.declaredWasiFlavors().length > 0,
+      emitsWasiLoader: await this.willEmitWasiLoader(),
+    })
+
+    const { exports, dts, dtsWithTypeImports, header } = await generateTypeDef({
+      typeDefDir,
+      noDtsHeader: this.options.noDtsHeader,
+      dtsHeader: this.options.dtsHeader,
+      configDtsHeader: this.config.dtsHeader,
+      configDtsHeaderFile: this.config.dtsHeaderFile,
+      constEnum: this.options.constEnum ?? this.config.constEnum,
+      runtimeStringEnum:
+        this.options.runtimeStringEnum ?? this.config.runtimeStringEnum,
+      cwd: this.options.cwd,
+      declareBindingTarget,
+    })
+    // The name is reserved exactly when a loader reports it and this file
+    // declares it — one condition, so ask the one predicate. A build that emits
+    // no loader (no `--platform`, or `--no-js`, with no WASI loader set
+    // regenerated) declares nothing, and must keep accepting an addon export of
+    // this name the way every release before the export did.
+    if (declareBindingTarget(exports)) {
+      assertBindingTargetIdentFree(exports)
+    }
+    this.typeDefWithTypeImports = dtsWithTypeImports
+    this.typeDefRenderedHeader = header
+
+    const typeDefRelativePath = this.options.dts ?? 'index.d.ts'
+    const finalDest = join(this.finalOutputDir, typeDefRelativePath)
+    const dest = this.getStagedOutputPath(finalDest)
+
+    try {
+      debug('Writing type def to:')
+      debug('  %i', dest)
+      assertWritableOutputDestination(finalDest)
+      await mkdirAsync(dirname(dest), { recursive: true })
+      await writeFileAtomic(dest, dts, 'utf-8')
+    } catch (e) {
+      throw new Error(`Failed to write type def file ${dest}`, { cause: e })
+    }
+
+    // The file is written unconditionally above, so track it whenever this
+    // build filled it. Runtime exports are one reason it has content; the
+    // `__napiBindingTarget` declaration is another, and a crate that registers
+    // everything from a `#[napi(module_exports)]` hook has only the second.
+    // `--pipe` (`cli/src/commands/build.ts`) and the `NapiCli.build` return
+    // value see registered outputs only.
+    if (dts.length > 0) {
+      this.outputs.push({ kind: 'dts', path: dest })
+    }
+
+    return exports
+  }
+
+  private getStagedOutputPath(finalPath: string) {
+    if (this.outputDir === this.finalOutputDir) {
+      return finalPath
+    }
+    const relativePath = relative(this.finalOutputDir, finalPath)
+    if (
+      relativePath !== '..' &&
+      !relativePath.startsWith(`..${sep}`) &&
+      !isAbsolute(relativePath)
+    ) {
+      return join(this.outputDir, relativePath)
+    }
+    const stagedPath = join(
+      this.outputDir,
+      '.napi-external',
+      createHash('sha256').update(finalPath).digest('hex'),
+    )
+    this.stagedOutputDestinations.set(stagedPath, finalPath)
+    return stagedPath
+  }
+
+  /**
+   * `platformArchABI`s of every WASI flavor this build's loaders can reference,
+   * in fallback preference order (threaded first). The generated root loader
+   * also lets consumers pin one exact declared flavor with
+   * NAPI_RS_WASI_FLAVOR.
+   */
+  private declaredWasiFlavors(): string[] {
+    const declaredWasiTargets = this.config.targets.filter(
+      (t) => t.platform === 'wasi',
+    )
+    // A direct `napi build --target wasm32-wasip1` (or any wasi triple) must
+    // participate even when the config does not declare that target —
+    // `writeWasiBinding` emits its loader set, so the index chain has to
+    // reference the same flavor.
+    if (
+      this.target.platform === 'wasi' &&
+      !declaredWasiTargets.some(
+        (t) => t.platformArchABI === this.target.platformArchABI,
+      )
+    ) {
+      declaredWasiTargets.push(this.target)
+    }
+    return [
+      ...new Set(
+        [
+          ...declaredWasiTargets.filter(wasiTargetHasThreads),
+          ...declaredWasiTargets.filter((t) => !wasiTargetHasThreads(t)),
+        ].map((t) => t.platformArchABI),
+      ),
+    ]
+  }
+
+  private async writeJsBinding(idents: string[]) {
+    // No reserved-name check here: it belongs to the decision that emits the
+    // declaration, which lives in `generateTypeDef` above. `writeJsBinding`
+    // runs for every cdylib build, including the ones that write no loader.
+    const wasiFlavors = this.declaredWasiFlavors()
+    return writeJsBinding({
+      platform: this.options.platform,
+      noJsBinding: this.options.noJsBinding,
+      idents,
+      jsBinding: this.options.jsBinding,
+      format: this.options.format,
+      binaryName: this.config.binaryName,
+      packageName: this.options.jsPackageName ?? this.config.packageName,
+      version: process.env.npm_new_version ?? this.config.packageJson.version,
+      outputDir: this.outputDir,
+      wasiFlavors,
+    })
+  }
+
+  private async writeWasiBinding(
+    distFileName: string | undefined | null,
+    idents: string[],
+  ) {
+    if (distFileName) {
+      const { dir } = parse(distFileName)
+      // A WASI build owns the export/declaration metadata for its flavor.
+      // Non-WASI builds use that metadata to regenerate declared loader sets
+      // without substituting the native surface. Legacy flavor files without
+      // metadata remain untouched. Two triples mapping to the same
+      // `platformArchABI` (e.g. `wasm32-wasip1-threads` and
+      // `wasm32-wasi-preview1-threads`) describe the same artifact set, so
+      // dedupe on it.
+      const wasiTargets: Target[] = []
+      const seen = new Set<string>()
+      const declaredWasiTargets =
+        this.target.platform === 'wasi'
+          ? [this.target]
+          : this.config.targets.filter((t) => t.platform === 'wasi')
+      for (const wasiTarget of declaredWasiTargets) {
+        if (seen.has(wasiTarget.platformArchABI)) {
+          continue
+        }
+        seen.add(wasiTarget.platformArchABI)
+        wasiTargets.push(wasiTarget)
+      }
+      const outputs: Output[] = []
+      const metadataByFlavor = new Map<string, WasiBindingMetadata>()
+      for (const wasiTarget of wasiTargets) {
+        const metadata =
+          this.target.platform === 'wasi' &&
+          wasiTarget.platformArchABI === this.target.platformArchABI
+            ? { exports: idents }
+            : await this.readExistingWasiBindingMetadata(wasiTarget)
+        if (!metadata) {
+          continue
+        }
+        metadataByFlavor.set(wasiTarget.platformArchABI, metadata)
+        outputs.push(
+          ...(await this.writeWasiBindingForTarget(wasiTarget, dir, metadata)),
+        )
+      }
+      if (wasiTargets.length > 0) {
+        // The browser entry re-exports a single flavor: the non-threaded one
+        // when declared (browser environments without cross-origin isolation
+        // cannot use the threaded flavor). An explicit WASI build target is
+        // authoritative, even when package config declares another flavor.
+        const browserFlavor = selectWasiBrowserTarget(
+          this.target,
+          this.config.targets,
+          wasiTargets,
+        )
+        const browserEntryPath = join(dir, 'browser.js')
+        const browserMetadata = metadataByFlavor.get(
+          browserFlavor.platformArchABI,
+        )
+        if (browserMetadata) {
+          await writeFileAtomic(
+            browserEntryPath,
+            createWasiBrowserEntry(
+              this.config.packageName,
+              browserFlavor.platformArchABI,
+              browserMetadata.exports,
+            ),
+          )
+          outputs.push({ kind: 'js', path: browserEntryPath })
+        } else {
+          const existingBrowserEntryPath = join(
+            this.finalOutputDir,
+            'browser.js',
+          )
+          if (await fileExists(existingBrowserEntryPath)) {
+            await copyFileAtomic(existingBrowserEntryPath, browserEntryPath)
+            outputs.push({ kind: 'js', path: browserEntryPath })
+          }
+        }
+      }
+      return outputs
+    }
+    return []
+  }
+
+  private async writeWasiBindingForTarget(
+    wasiTarget: Target,
+    dir: string,
+    metadata: WasiBindingMetadata,
+  ): Promise<Output[]> {
+    const { exports: idents } = metadata
+    const asyncRuntime = this.config.wasm?.asyncRuntime === true
+    const hostContract = checkAsyncRuntimeHostContract({
+      idents,
+      asyncRuntime,
+      typeDefAvailable: this.enableTypeDef,
+      packageName: this.config.packageName,
+    })
+    if (hostContract.error) {
+      throw new Error(hostContract.error)
+    }
+    if (hostContract.warning) {
+      debug.warn(hostContract.warning)
+    }
+    const hasThreads = wasiTargetHasThreads(wasiTarget)
+    const { initialMemory, maximumMemory } = resolveWasmMemory(
+      this.config.wasm,
+      hasThreads,
+    )
+    const loaderSuffix = wasiLoaderSuffix(wasiTarget.platformArchABI)
+    // the wasm file stem referenced from inside the loaders
+    const name = `${this.config.binaryName}.${wasiTarget.platformArchABI}`
+    const bindingPath = join(
+      dir,
+      `${this.config.binaryName}.${loaderSuffix}.cjs`,
+    )
+    const browserBindingPath = join(
+      dir,
+      `${this.config.binaryName}.${loaderSuffix}-browser.js`,
+    )
+    const bindingTypeDefPath = join(
+      dir,
+      `${this.config.binaryName}.${loaderSuffix}.d.cts`,
+    )
+    // A flavor's own export list, not the root type-def's: this is reached only
+    // once `writeWasiBinding` has metadata for the flavor, i.e. only when this
+    // loader set really is written. The root-side check lives in
+    // `Builder.generateTypeDef`, gated on the same predicate as the
+    // declaration — do not re-add an unconditional one here or there.
+    assertBindingTargetIdentFree(idents)
+    // No stamp here. `createWasiBinding` emits the only one, inside the
+    // initialization `try` that rolls the environment back — both the guard and
+    // the assignment can throw, and neither may escape past that boundary. The
+    // assignment there is what `cjs-module-lexer` reads, so this tail stays
+    // purely declarative.
+    const exportsCode = [
+      `module.exports = __napiModule.exports`,
+      ...idents.map(
+        (ident) => `module.exports.${ident} = __napiModule.exports.${ident}`,
+      ),
+    ].join('\n')
+    await writeFileAtomic(
+      bindingPath,
+      createWasiArtifactMetadata(
+        this.options.platform && !this.options.noJsBinding
+          ? (this.options.jsBinding ?? 'index.js')
+          : null,
+        this.config.binaryName,
+        idents,
+      ) +
+        createWasiBinding(
+          name,
+          this.config.packageName,
+          initialMemory,
+          maximumMemory,
+          hasThreads,
+          wasiTarget.platformArchABI,
+          `${this.config.binaryName}.${wasiTarget.platformArchABI}`,
+          asyncRuntime,
+        ) +
+        exportsCode +
+        '\n',
+      'utf8',
+    )
+    await writeFileAtomic(
+      browserBindingPath,
+      createWasiBrowserBinding(
+        name,
+        initialMemory,
+        maximumMemory,
+        this.config.wasm?.browser?.fs,
+        this.config.wasm?.browser?.asyncInit,
+        this.config.wasm?.browser?.buffer,
+        this.config.wasm?.browser?.errorEvent,
+        hasThreads,
+        wasiTarget.platformArchABI,
+        asyncRuntime,
+      ) +
+        `export default __napiModule.exports\n` +
+        idents
+          .map(
+            (ident) => `export const ${ident} = __napiModule.exports.${ident}`,
+          )
+          .join('\n') +
+        '\n',
+      'utf8',
+    )
+    let bindingTypeDef = metadata.bindingTypeDef
+    if (bindingTypeDef === undefined) {
+      const finalSourceTypeDefPath = join(
+        this.finalOutputDir,
+        this.options.dts ?? 'index.d.ts',
+      )
+      const sourceTypeDefPath = this.enableTypeDef
+        ? this.getStagedOutputPath(finalSourceTypeDefPath)
+        : finalSourceTypeDefPath
+      const sourceTypeDef = this.enableTypeDef
+        ? await readFileAsync(sourceTypeDefPath, 'utf8')
+        : `${DEFAULT_TYPE_DEF_HEADER}
+declare const binding: Record<string, unknown>
+export = binding
+`
+      const selectedSourceTypeDef =
+        !hasThreads &&
+        this.config.wasm?.browser?.buffer === true &&
+        this.typeDefWithTypeImports
+          ? this.typeDefWithTypeImports
+          : sourceTypeDef
+      bindingTypeDef = this.enableTypeDef
+        ? prepareWasiBindingTypeDef(
+            selectedSourceTypeDef,
+            finalSourceTypeDefPath,
+            join(
+              this.finalOutputDir,
+              relative(this.outputDir, bindingTypeDefPath),
+            ),
+            hasThreads,
+            this.config.packageJson.type,
+          )
+        : hasThreads
+          ? selectedSourceTypeDef
+          : removeNodeStreamWebTypeImports(selectedSourceTypeDef)
+    }
+    // This flavor's loaders report a compile-time-fixed identity, so this file
+    // declares that one literal: the root entry's union exists only for
+    // `NAPI_RS_NATIVE_LIBRARY_PATH`, which no flavor loader reads. On the fresh
+    // path that narrows the union inherited from the root `index.d.ts`; on the
+    // preserved path it refreshes a file kept from an earlier build, which may
+    // predate the `__napiBindingTarget` export the loader written above carries.
+    bindingTypeDef = ensureBindingTargetDeclaration(
+      bindingTypeDef,
+      wasiTarget.platformArchABI,
+      this.typeDefRenderedHeader,
+    )
+    await writeFileAtomic(bindingTypeDefPath, bindingTypeDef, 'utf8')
+    const outputs: Output[] = [
+      { kind: 'js', path: bindingPath },
+      { kind: 'js', path: browserBindingPath },
+      { kind: 'dts', path: bindingTypeDefPath },
+    ]
+    if (hasThreads) {
+      // worker scripts are only referenced by the threaded loaders
+      const workerPath = join(dir, 'wasi-worker.mjs')
+      const browserWorkerPath = join(dir, 'wasi-worker-browser.mjs')
+      await writeFileAtomic(workerPath, WASI_WORKER_TEMPLATE, 'utf8')
+      await writeFileAtomic(
+        browserWorkerPath,
+        createWasiBrowserWorkerBinding(
+          this.config.wasm?.browser?.fs ?? false,
+          this.config.wasm?.browser?.errorEvent ?? false,
+        ),
+        'utf8',
+      )
+      outputs.push(
+        { kind: 'js', path: workerPath },
+        { kind: 'js', path: browserWorkerPath },
+      )
+    } else {
+      // the deferred workerd-safe loader only exists for non-threaded flavors
+      const deferredBindingPath = join(
+        dir,
+        `${this.config.binaryName}.${loaderSuffix}-deferred.js`,
+      )
+      const deferredTypeDefPath = join(
+        dir,
+        `${this.config.binaryName}.${loaderSuffix}-deferred.d.ts`,
+      )
+      await writeFileAtomic(
+        deferredBindingPath,
+        createWasiDeferredBrowserBinding(
+          name,
+          initialMemory,
+          maximumMemory,
+          this.config.wasm?.browser?.buffer,
+          wasiTarget.platformArchABI,
+          asyncRuntime,
+        ),
+        'utf8',
+      )
+      await writeFileAtomic(
+        deferredTypeDefPath,
+        createWasiDeferredBindingTypeDef(
+          `./${this.config.binaryName}.${loaderSuffix}.cjs`,
+          this.enableTypeDef,
+          wasiTarget.platformArchABI,
+        ),
+        'utf8',
+      )
+      outputs.push(
+        { kind: 'js', path: deferredBindingPath },
+        { kind: 'dts', path: deferredTypeDefPath },
+      )
+    }
+    return outputs
+  }
+
+  private setEnvIfNotExists(env: string, value: string) {
+    if (!process.env[env]) {
+      this.envs[env] = value
+    }
+  }
+}
+
+export async function verifyWasiReactor(wasmPath: string): Promise<void> {
+  const bytes = await readFileAsync(wasmPath)
+  let module: WebAssembly.Module
+  try {
+    module = new WebAssembly.Module(bytes)
+  } catch (error) {
+    throw new Error(`Failed to validate WASI artifact ${wasmPath}`, {
+      cause: error,
+    })
+  }
+  if (
+    !WebAssembly.Module.exports(module).some(
+      ({ name, kind }) => name === '_initialize' && kind === 'function',
+    )
+  ) {
+    throw new Error(
+      `WASI artifact ${wasmPath} does not export _initialize. Ensure napi-build can locate crt1-reactor.o for the selected Rust target.`,
+    )
+  }
+}
+
+function assertWritableOutputDestination(path: string) {
+  if (existsSync(path) && statSync(path).isDirectory()) {
+    throw new Error(`Output destination is a directory: ${path}`)
+  }
+
+  let parent = dirname(path)
+  while (!existsSync(parent)) {
+    const nextParent = dirname(parent)
+    if (nextParent === parent) {
+      return
+    }
+    parent = nextParent
+  }
+  if (!statSync(parent).isDirectory()) {
+    throw new Error(`Output parent is not a directory: ${parent}`)
+  }
+}
+
+function commonPathAncestor(paths: Iterable<string>) {
+  const resolvedPaths = [...paths].map((path) => resolve(path))
+  if (resolvedPaths.length === 0) {
+    throw new Error('Cannot compute a common path for no filesystem outputs')
+  }
+  let common = resolvedPaths[0]
+  for (const path of resolvedPaths.slice(1)) {
+    while (true) {
+      const relativePath = relative(common, path)
+      if (
+        relativePath === '' ||
+        (relativePath !== '..' &&
+          !relativePath.startsWith(`..${sep}`) &&
+          !isAbsolute(relativePath))
+      ) {
+        break
+      }
+      const parent = dirname(common)
+      if (parent === common) {
+        break
+      }
+      common = parent
+    }
+  }
+  return common
+}
+
+async function collectFilesRecursively(root: string): Promise<string[]> {
+  const files: string[] = []
+  for (const entry of await readdirAsync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...(await collectFilesRecursively(path)))
+    } else if (entry.isFile()) {
+      files.push(path)
+    }
+  }
+  return files.sort()
+}
+
+export interface WriteJsBindingOptions {
+  platform?: boolean
+  noJsBinding?: boolean
+  idents: string[]
+  jsBinding?: string
+  format?: BuildFormat
+  esm?: boolean
+  commonjs?: boolean
+  binaryName: string
+  packageName: string
+  version: string
+  outputDir: string
+  /**
+   * `platformArchABI`s of the declared WASI targets in fallback preference
+   * order (threaded first). Defaults to the legacy `['wasm32-wasi']` chain
+   * when omitted or empty. Generated loaders expose these exact identities
+   * through `NAPI_RS_WASI_FLAVOR`.
+   */
+  wasiFlavors?: string[]
+}
+
+/** Write a platform binding loader in the requested module format. */
+export async function writeJsBinding(
+  options: WriteJsBindingOptions,
+): Promise<Output | undefined> {
+  const hasWasiFallback = Boolean(options.wasiFlavors?.length)
+  if (
+    !options.platform ||
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+    options.noJsBinding ||
+    (options.idents.length === 0 && !hasWasiFallback)
+  ) {
+    return
+  }
+
+  const name = options.jsBinding ?? 'index.js'
+  const dest = join(options.outputDir, name)
+  const localWasiName = relative(
+    dirname(dest),
+    join(options.outputDir, options.binaryName),
+  ).replaceAll('\\', '/')
+  const localWasiSpecifier = localWasiName.startsWith('.')
+    ? localWasiName
+    : `./${localWasiName}`
+
+  const createBinding =
+    resolveBuildFormat(options) === 'esm' ? createEsmBinding : createCjsBinding
+  const binding = createBinding(
+    options.binaryName,
+    options.packageName,
+    options.idents,
+    // in npm preversion hook
+    options.version,
+    options.wasiFlavors,
+    localWasiSpecifier,
+  )
+
+  try {
+    debug('Writing js binding to:')
+    debug('  %i', dest)
+    await mkdirAsync(dirname(dest), { recursive: true })
+    await writeFileAtomic(dest, binding, 'utf-8')
+    return { kind: 'js', path: dest } satisfies Output
+  } catch (e) {
+    throw new Error('Failed to write js binding file', { cause: e })
+  }
+}
+
+export interface GenerateTypeDefOptions {
+  typeDefDir: string
+  noDtsHeader?: boolean
+  dtsHeader?: string
+  dtsHeaderFile?: string
+  configDtsHeader?: string
+  configDtsHeaderFile?: string
+  constEnum?: boolean
+  runtimeStringEnum?: boolean
+  cwd: string
+  /**
+   * Declare the generated loader's `__napiBindingTarget` export. Set it for
+   * builds that emit a loader; a build that emits none declares nothing. The
+   * declared union covers every artifact a loader can hand back, not only the
+   * targets this package builds — see {@link BINDING_TARGET_TYPE_UNION}.
+   *
+   * Whether the root loader is written depends on the exports this build
+   * produced, which only typegen knows, so a predicate may be passed instead
+   * of a flag; it is called with the generated export list. See
+   * {@link bindingTargetDeclarationPredicate}.
+   */
+  declareBindingTarget?: boolean | ((exports: readonly string[]) => boolean)
+}
+
+/**
+ * Walk the napi-derive intermediate type-def directory, render every entry
+ * into TypeScript via {@link processTypeDef}, and return the concatenated
+ * `.d.ts` source plus the list of identifiers to re-export from
+ * `index.js`.
+ */
+export async function generateTypeDef(
+  options: GenerateTypeDefOptions,
+): Promise<{
+  exports: string[]
+  dts: string
+  dtsWithTypeImports: string
+  /**
+   * The `.d.ts` header as rendered, before anything the generated body needs
+   * was appended to it. `ensureBindingTargetDeclaration` takes it to tell a
+   * declaration the header owns from one this build wrote.
+   */
+  header: string
+}> {
+  let header = ''
+  let dts = ''
+  let exports: string[] = []
+
+  const declaresBindingTarget = (generated: readonly string[]) =>
+    typeof options.declareBindingTarget === 'function'
+      ? options.declareBindingTarget(generated)
+      : Boolean(options.declareBindingTarget)
+
+  if (!options.noDtsHeader) {
+    const dtsHeader = options.dtsHeader ?? options.configDtsHeader
+    const dtsHeaderFile = options.dtsHeaderFile ?? options.configDtsHeaderFile
+    // An explicit API header file takes precedence over the config file;
+    // either file takes precedence over inline header text.
+    if (dtsHeaderFile) {
+      try {
+        header = await readFileAsync(join(options.cwd, dtsHeaderFile), 'utf-8')
+      } catch (e) {
+        debug.warn(`Failed to read dts header file ${dtsHeaderFile}`, e)
+      }
+    } else if (dtsHeader) {
+      header = dtsHeader
+    } else {
+      header = DEFAULT_TYPE_DEF_HEADER
+    }
+  }
+
+  // The header exactly as the project wrote it, captured before the appends
+  // below grow it, so `ensureBindingTargetDeclaration` can tell a declaration
+  // the header owns from one this build wrote into a file derived from this
+  // one.
+  const renderedHeader = header
+  const headerBindingTarget = bindingTargetExports(renderedHeader)
+  // That header may declare `__napiBindingTarget` itself, as a workaround for
+  // loaders that predate the export. Declaring it again below would be a TS2451
+  // redeclaration, so the header's own wins — the rule
+  // `ensureBindingTargetDeclaration` already applies to a preserved WASI
+  // declaration.
+  //
+  // A header that exports by assignment (`export = binding`, the form a build
+  // without `napi-derive`'s `type-def` feature emits) leaves no room either: an
+  // export assignment cannot sit beside any named export, so appending one is
+  // TS2309 rather than a declaration anybody can use. Its exports are untyped
+  // anyway. `ensureBindingTargetDeclaration` already leaves such a file alone,
+  // and the WASI declaration derived from this one goes through it — reading
+  // the same answer here keeps both ends of that derivation agreeing.
+  const headerDeclaresBindingTarget =
+    headerBindingTarget.ownsName || headerBindingTarget.exportsByAssignment
+
+  // A crate can register every export from a `#[napi(module_exports)]` hook
+  // and emit no `.type` file, and the loader written for it still exports
+  // `__napiBindingTarget`. Declare it, so the declaration file describes the
+  // loader that was written rather than staying empty.
+  const bindingTargetOnlyTypeDef = () => {
+    if (!declaresBindingTarget([])) {
+      return {
+        exports: [],
+        dts: '',
+        dtsWithTypeImports: '',
+        header: renderedHeader,
+      }
+    }
+    const declarationOnly = finalizeTypeDefHeader(
+      headerDeclaresBindingTarget
+        ? header
+        : header + BINDING_TARGET_TYPE_DECLARATION,
+    )
+    return {
+      exports: [],
+      dts: declarationOnly,
+      dtsWithTypeImports: declarationOnly,
+      header: renderedHeader,
+    }
+  }
+
+  if (!(await dirExistsAsync(options.typeDefDir))) {
+    return bindingTargetOnlyTypeDef()
+  }
+
+  const files = await readdirAsync(options.typeDefDir, { withFileTypes: true })
+
+  if (!files.length) {
+    debug('No type def files found. Skip generating dts file.')
+    return bindingTargetOnlyTypeDef()
+  }
+
+  const typeDefFiles = files
+    .filter((file) => file.isFile())
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  const constEnum = options.constEnum ?? true
+  const runtimeStringEnum = options.runtimeStringEnum ?? false
+  if (runtimeStringEnum && constEnum) {
+    debug.warn(
+      '`--runtime-string-enum` has no effect when `--const-enum` is enabled (the default). Pass `--no-const-enum` to activate runtime string enum emission.',
+    )
+  }
+
+  const processedTypeDefs = await processTypeDefs(
+    typeDefFiles.map((file) => join(options.typeDefDir, file.name)),
+    constEnum,
+    runtimeStringEnum,
+    header,
+  )
+
+  dts = processedTypeDefs.dts
+  exports = processedTypeDefs.exports
+  const dtsWithTypeImportMarkers = processedTypeDefs.dtsWithTypeImportMarkers
+  const typeImports = processedTypeDefs.typeImports
+
+  if (dts.indexOf('ExternalObject<') > -1) {
+    header += `
+export declare class ExternalObject<T> {
+  readonly '': {
+    readonly '': unique symbol
+    [K: symbol]: T
+  }
+}
+`
+  }
+
+  if (dts.indexOf('TypedArray') > -1) {
+    header += `
+export type TypedArray =
+  | Int8Array
+  | Uint8Array
+  | Uint8ClampedArray
+  | Int16Array
+  | Uint16Array
+  | Int32Array
+  | Uint32Array
+  | Float32Array
+  | Float64Array
+  | BigInt64Array
+  | BigUint64Array
+`
+  }
+
+  if (declaresBindingTarget(exports) && !headerDeclaresBindingTarget) {
+    header += BINDING_TARGET_TYPE_DECLARATION
+  }
+
+  header = finalizeTypeDefHeader(header)
+  dts = header + dts
+  const dtsWithTypeImports = rewriteTypeImportReferences(
+    header + dtsWithTypeImportMarkers,
+    typeImports,
+    true,
+  )
+
+  return {
+    exports,
+    dts,
+    dtsWithTypeImports,
+    header: renderedHeader,
+  }
+}

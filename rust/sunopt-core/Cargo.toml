@@ -1,0 +1,13 @@
+# rust/sunopt-core/Cargo.toml
+
+[package]
+name = "sunopt-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+oxc = { version = "0.155.0", features = ["ast_visit"] }
+cranelift = { version = "0.137.0", features = ["native", "jit", "module"] }

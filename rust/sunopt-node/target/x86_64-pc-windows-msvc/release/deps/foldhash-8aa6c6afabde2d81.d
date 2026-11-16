@@ -1,0 +1,10 @@
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\target\x86_64-pc-windows-msvc\release\deps\foldhash-8aa6c6afabde2d81.d: C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\lib.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\fast.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\quality.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\seed.rs
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\target\x86_64-pc-windows-msvc\release\deps\libfoldhash-8aa6c6afabde2d81.rlib: C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\lib.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\fast.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\quality.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\seed.rs
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\target\x86_64-pc-windows-msvc\release\deps\libfoldhash-8aa6c6afabde2d81.rmeta: C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\lib.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\fast.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\quality.rs C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\seed.rs
+
+C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\lib.rs:
+C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\fast.rs:
+C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\quality.rs:
+C:\Users\Nicolas.Haude\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\foldhash-0.2.0\src\seed.rs:

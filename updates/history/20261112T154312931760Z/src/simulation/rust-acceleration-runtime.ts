@@ -1,0 +1,611 @@
+// src/simulation/rust-acceleration-runtime.ts
+
+import {
+  readFileSync,
+} from "node:fs";
+
+import {
+  createRequire,
+} from "node:module";
+
+import {
+  join,
+} from "node:path";
+
+
+/*
+ * ================================================================
+ * GLOBAL SUNOPT NATIVE RUNTIME
+ * ================================================================
+ *
+ * ONE TypeScript source contains every accelerated hot loop:
+ *
+ *   src/simulation/rust-acceleration-scopes.ts
+ *
+ * Every native execution receives:
+ *
+ *   source + scopeId + numerical arguments
+ *
+ * The native parser therefore sees the same source file for every
+ * acceleration job and selects the requested rust_* scope by ID.
+ */
+
+
+export type SunOptAccelerationScopeId =
+  | "rust_noSunshine"
+  | "rust_peakShavingCausal";
+
+
+export type SunOptNativeFunction =
+  (...args: any[]) => unknown;
+
+
+export interface SunOptNativeBinding {
+  runNoSunshineKernel?:
+    SunOptNativeFunction;
+
+  runPeakShavingCausalKernel?:
+    SunOptNativeFunction;
+
+  clearAccelerationScopeCache?:
+    SunOptNativeFunction;
+
+  getAccelerationScopeCacheSize?:
+    SunOptNativeFunction;
+
+  /*
+   * Backwards-compatible aliases from the original 7-day bridge.
+   */
+  clearNoSunshineKernelCache?:
+    SunOptNativeFunction;
+
+  getNoSunshineKernelCacheSize?:
+    SunOptNativeFunction;
+
+  __napiBindingTarget?:
+    string;
+
+  [key: string]:
+    unknown;
+}
+
+
+export interface NativeScopeStatus {
+  scopeId:
+    SunOptAccelerationScopeId;
+
+  available:
+    boolean;
+
+  disabled:
+    boolean;
+
+  calls:
+    number;
+
+  nativeCalls:
+    number;
+
+  fallbackCalls:
+    number;
+
+  failures:
+    number;
+
+  nativeDurationMs:
+    number;
+
+  lastError:
+    string | null;
+}
+
+
+interface MutableNativeScopeStatus
+  extends NativeScopeStatus {
+}
+
+
+const require =
+  createRequire(
+    import.meta.url,
+  );
+
+
+const ACCELERATION_SOURCE_PATH =
+  join(
+    process.cwd(),
+    "src",
+    "simulation",
+    "rust-acceleration-scopes.ts",
+  );
+
+
+let accelerationSource:
+  string | null =
+  null;
+
+
+let nativeBinding:
+  SunOptNativeBinding | null =
+  null;
+
+
+let nativeBindingLoadAttempted =
+  false;
+
+
+let nativeBindingLoadError:
+  Error | null =
+  null;
+
+
+let nativeRuntimeReported =
+  false;
+
+
+const scopeStatus =
+  new Map<
+    SunOptAccelerationScopeId,
+    MutableNativeScopeStatus
+  >();
+
+
+function errorToString(
+  error: unknown,
+): string {
+
+  if (
+    error instanceof Error
+  ) {
+
+    return (
+      error.stack ??
+      error.message
+    );
+  }
+
+
+  return String(
+    error,
+  );
+}
+
+
+export function getAccelerationScopeSource():
+  string {
+
+  if (
+    accelerationSource !==
+    null
+  ) {
+
+    return accelerationSource;
+  }
+
+
+  accelerationSource =
+    readFileSync(
+      ACCELERATION_SOURCE_PATH,
+      "utf8",
+    );
+
+
+  return accelerationSource;
+}
+
+
+export function getAccelerationScopeSourcePath():
+  string {
+
+  return ACCELERATION_SOURCE_PATH;
+}
+
+
+function getOrCreateScopeStatus(
+  scopeId:
+    SunOptAccelerationScopeId,
+): MutableNativeScopeStatus {
+
+  const existing =
+    scopeStatus.get(
+      scopeId,
+    );
+
+
+  if (existing) {
+
+    return existing;
+  }
+
+
+  const created:
+    MutableNativeScopeStatus = {
+
+    scopeId,
+
+    available:
+      false,
+
+    disabled:
+      false,
+
+    calls:
+      0,
+
+    nativeCalls:
+      0,
+
+    fallbackCalls:
+      0,
+
+    failures:
+      0,
+
+    nativeDurationMs:
+      0,
+
+    lastError:
+      null,
+  };
+
+
+  scopeStatus.set(
+    scopeId,
+    created,
+  );
+
+
+  return created;
+}
+
+
+export function getSunOptNativeBinding():
+  SunOptNativeBinding | null {
+
+  if (
+    nativeBindingLoadAttempted
+  ) {
+
+    return nativeBinding;
+  }
+
+
+  nativeBindingLoadAttempted =
+    true;
+
+
+  try {
+
+    nativeBinding =
+      require(
+        "sunopt-node",
+      ) as SunOptNativeBinding;
+
+
+    nativeBindingLoadError =
+      null;
+
+
+    if (
+      !nativeRuntimeReported
+    ) {
+
+      nativeRuntimeReported =
+        true;
+
+
+      console.log(
+        "[SunOpt] Global Oxc/Cranelift acceleration runtime active.",
+        {
+          target:
+            nativeBinding
+              .__napiBindingTarget ??
+            "unknown",
+
+          source:
+            ACCELERATION_SOURCE_PATH,
+        },
+      );
+    }
+
+
+    return nativeBinding;
+
+  } catch (error) {
+
+    nativeBinding =
+      null;
+
+
+    nativeBindingLoadError =
+      error instanceof Error
+        ? error
+        : new Error(
+            String(
+              error,
+            ),
+          );
+
+
+    console.error(
+      "[SunOpt] Native acceleration runtime unavailable. TypeScript scope fallbacks remain active.",
+      nativeBindingLoadError,
+    );
+
+
+    return null;
+  }
+}
+
+
+export interface TryRunNativeScopeOptions<
+  TResult
+> {
+  scopeId:
+    SunOptAccelerationScopeId;
+
+  exportName:
+    "runNoSunshineKernel" |
+    "runPeakShavingCausalKernel";
+
+  /*
+   * Numerical arguments only.
+   *
+   * The runtime prepends the SINGLE global TypeScript source and
+   * the requested rust_* scope ID automatically.
+   */
+  args:
+    unknown[];
+
+  validateResult?: (
+    value: unknown,
+  ) => TResult;
+
+  retryAfterFailure?:
+    boolean;
+}
+
+
+export function tryRunNativeScope<
+  TResult
+>(
+  options:
+    TryRunNativeScopeOptions<TResult>,
+): TResult | null {
+
+  const status =
+    getOrCreateScopeStatus(
+      options.scopeId,
+    );
+
+
+  status.calls +=
+    1;
+
+
+  if (
+    status.disabled
+  ) {
+
+    status.fallbackCalls +=
+      1;
+
+    return null;
+  }
+
+
+  const binding =
+    getSunOptNativeBinding();
+
+
+  if (
+    binding ===
+    null
+  ) {
+
+    status.available =
+      false;
+
+    status.fallbackCalls +=
+      1;
+
+    return null;
+  }
+
+
+  const nativeFunction =
+    binding[
+      options.exportName
+    ];
+
+
+  if (
+    typeof nativeFunction !==
+    "function"
+  ) {
+
+    status.available =
+      false;
+
+    status.fallbackCalls +=
+      1;
+
+    return null;
+  }
+
+
+  status.available =
+    true;
+
+
+  const start =
+    performance.now();
+
+
+  try {
+
+    const rawResult =
+      nativeFunction(
+        getAccelerationScopeSource(),
+        options.scopeId,
+        ...options.args,
+      );
+
+
+    const result =
+      options.validateResult
+        ? options.validateResult(
+            rawResult,
+          )
+        : rawResult as TResult;
+
+
+    status.nativeCalls +=
+      1;
+
+    status.nativeDurationMs +=
+      performance.now() -
+      start;
+
+
+    return result;
+
+  } catch (error) {
+
+    status.nativeDurationMs +=
+      performance.now() -
+      start;
+
+    status.failures +=
+      1;
+
+    status.lastError =
+      errorToString(
+        error,
+      );
+
+
+    if (
+      options.retryAfterFailure !==
+      true
+    ) {
+
+      status.disabled =
+        true;
+    }
+
+
+    status.fallbackCalls +=
+      1;
+
+
+    console.error(
+      `[SunOpt] Native acceleration scope "${options.scopeId}" failed. Using TypeScript scope fallback.`,
+      error,
+    );
+
+
+    return null;
+  }
+}
+
+
+export function getNativeScopeStatus(
+  scopeId:
+    SunOptAccelerationScopeId,
+): NativeScopeStatus {
+
+  return {
+    ...getOrCreateScopeStatus(
+      scopeId,
+    ),
+  };
+}
+
+
+export function getAllNativeScopeStatus():
+  NativeScopeStatus[] {
+
+  return Array.from(
+    scopeStatus.values(),
+    (status) => ({
+      ...status,
+    }),
+  );
+}
+
+
+export function getNativeAccelerationCacheSize():
+  number | null {
+
+  const binding =
+    getSunOptNativeBinding();
+
+
+  if (
+    binding ===
+    null
+  ) {
+
+    return null;
+  }
+
+
+  const functionValue =
+    binding
+      .getAccelerationScopeCacheSize ??
+    binding
+      .getNoSunshineKernelCacheSize;
+
+
+  if (
+    typeof functionValue !==
+    "function"
+  ) {
+
+    return null;
+  }
+
+
+  const result =
+    functionValue();
+
+
+  return typeof result ===
+    "number"
+      ? result
+      : null;
+}
+
+
+export function clearNativeAccelerationCache():
+  void {
+
+  const binding =
+    getSunOptNativeBinding();
+
+
+  if (
+    binding ===
+    null
+  ) {
+
+    return;
+  }
+
+
+  const functionValue =
+    binding
+      .clearAccelerationScopeCache ??
+    binding
+      .clearNoSunshineKernelCache;
+
+
+  if (
+    typeof functionValue ===
+    "function"
+  ) {
+
+    functionValue();
+  }
+}

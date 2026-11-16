@@ -1,0 +1,405 @@
+import { underline, yellow } from 'colorette'
+import { merge, omit } from 'es-toolkit'
+
+import { fileExists, readFileAsync } from './misc.js'
+import {
+  cargoTargetTriple,
+  DEFAULT_TARGETS,
+  parseTriple,
+  type Target,
+} from './target.js'
+
+export type ValueOfConstArray<T> = T[Exclude<keyof T, keyof Array<any>>]
+
+export const SupportedPackageManagers = ['yarn', 'pnpm'] as const
+export const SupportedTestFrameworks = ['ava'] as const
+
+export type SupportedPackageManager = ValueOfConstArray<
+  typeof SupportedPackageManagers
+>
+export type SupportedTestFramework = ValueOfConstArray<
+  typeof SupportedTestFrameworks
+>
+
+/**
+ * Package managers that may publish the **root** package, distinguished by
+ * whether they rewrite the manifest while packing it.
+ *
+ * `yarn` means yarn berry (>= 2); Yarn Classic (1.x) packs the raw manifest
+ * like npm does and is spelled `yarn-classic`.
+ */
+export const RootPublishers = ['npm', 'pnpm', 'yarn', 'yarn-classic'] as const
+
+export type RootPublisher = ValueOfConstArray<typeof RootPublishers>
+
+export interface UserNapiConfig {
+  /**
+   * Name of the binary to be generated, default to `index`
+   */
+  binaryName?: string
+  /**
+   * Name of the npm package, default to the name of root package.json name
+   *
+   * Always given `@scope/pkg` and arch suffix will be appended like `@scope/pkg-linux-gnu-x64`
+   */
+  packageName?: string
+  /**
+   * All targets the crate will be compiled for
+   */
+  targets?: string[]
+
+  /**
+   * The npm client project uses.
+   */
+  npmClient?: string
+
+  /**
+   * The package manager that publishes the **root** package.
+   *
+   * `napi pre-publish` publishes only the generated per-platform packages; the
+   * root package is packed and published by the caller, so this cannot be
+   * inferred reliably. pnpm and yarn berry replace `exports` with
+   * `publishConfig.exports` while packing, so under those publishers
+   * `napi pre-publish` validates only the publish-effective export map and the
+   * local `exports` may point at development-only sources. npm and Yarn
+   * Classic ship `exports` untouched.
+   *
+   * Unset — the default — validates both maps, which is correct for every
+   * publisher but rejects development-only conditions such as
+   * `"dev": "./src/index.ts"`.
+   */
+  rootPublisher?: RootPublisher
+
+  /**
+   * Whether generate const enum for typescript bindings
+   */
+  constEnum?: boolean
+
+  /**
+   * Emit `#[napi(string_enum)]` enums as runtime enums (`export declare enum`) under `--no-const-enum`. Default: type-only union.
+   */
+  runtimeStringEnum?: boolean
+
+  /**
+   * dts header prepend to the generated dts file
+   */
+  dtsHeader?: string
+
+  /**
+   * dts header file path to be prepended to the generated dts file
+   * if both dtsHeader and dtsHeaderFile are provided, dtsHeaderFile will be used
+   */
+  dtsHeaderFile?: string
+
+  /**
+   * wasm compilation options
+   */
+  wasm?: {
+    /**
+     * https://developer.mozilla.org/en-US/docs/WebAssembly/JavaScript_interface/Memory
+     * @default 4000 pages (250 MiB), or 1024 pages (64 MiB) for the deferred workerd loader
+     */
+    initialMemory?: number
+    /**
+     * Initial linear memory, in 64 KiB pages, for the **threadless**
+     * (`wasm32-wasip1`) loaders only: the Node CJS loader, the browser loader
+     * and the deferred `./workerd` loader.
+     *
+     * The threaded loaders allocate one `shared: true` memory that every
+     * wasi-threads worker maps, so every worker stack and every thread's
+     * allocations come out of it and growing it is a cross-thread event; it is
+     * sized for the whole pool up front. The threadless loaders drive a single
+     * thread through a plain growable `ArrayBuffer`: they only have to clear
+     * the module's own link-time floor (`-zstack-size` plus static data) and
+     * grow on demand, which is what lets the same build fit a host with a hard
+     * isolate cap such as workerd's 128 MiB.
+     *
+     * Falls back to `initialMemory` when unset, so existing projects are
+     * unaffected.
+     *
+     * @default `initialMemory` (4000 pages), or 1024 pages for the deferred
+     *   `./workerd` loader
+     */
+    threadlessInitialMemory?: number
+    /**
+     * @default 65536 pages (4GiB)
+     */
+    maximumMemory?: number
+
+    /**
+     * Whether the generated `<packageName>-wasm32-wasi` package is declared as
+     * an `optionalDependency` of the root package.
+     *
+     * When native targets are configured the WASI package is a fallback for
+     * hosts that cannot load a `.node` binary, so declaring it would make every
+     * consumer download the `.wasm` binary they will never load. It is
+     * therefore omitted by default and is expected to be installed on demand by
+     * the environments that need it.
+     *
+     * When WASI is the only configured target it is the primary artifact and is
+     * declared by default.
+     *
+     * Set this explicitly to override either default.
+     *
+     * @default true when every configured target is WASI, false otherwise
+     */
+    optionalDependency?: boolean
+
+    /**
+     * Whether the generated WASI loaders bootstrap the `napi-async-runtime`
+     * CurrentThread JavaScript hosts.
+     *
+     * A binding built with the `napi-async-runtime` crate defaults to the
+     * `CurrentThread` flavor on every WebAssembly target. It is the only
+     * flavor on threadless `wasm32-wasip1`; `wasm32-wasip1-threads` also
+     * accepts an explicitly configured `MultiThread`. Under `CurrentThread`
+     * its futures make no progress until a task host is registered, and its
+     * timers never fire until a timer host is, so the loader must install
+     * both right after instantiation and unregister them before the
+     * environment is destroyed. A `MultiThread` binding uses neither host and
+     * the installed task host is unref'd, so leaving this enabled is also
+     * correct for an addon that picks its flavor at runtime.
+     *
+     * Enabling this emits that bootstrap in the node, browser and deferred
+     * (workerd) loaders, and declares `@napi-rs/async-runtime` in the
+     * generated `<packageName>-wasm32-*` packages. The loader delegates the
+     * whole host contract — the seven exports, contract version 4, the
+     * reservation identity, the liveness probe and the rollback — to that
+     * package, so a binding that does not actually expose the contract fails
+     * loudly at load with `ERR_NAPI_ASYNC_RUNTIME_BINDING_MISMATCH`.
+     *
+     * The bootstrap runs after instantiation, so after `#[module_init]`: the
+     * host registration functions are exports of the binding itself. Code that
+     * runs during module registration must not create timers (`sleep_until`
+     * fails loud at creation without a timer host) and cannot expect task
+     * progress until the loader has returned.
+     *
+     * @default false
+     */
+    asyncRuntime?: boolean
+
+    /**
+     * Browser wasm binding configuration
+     */
+    browser?: {
+      /**
+       * Whether to use fs module in browser
+       */
+      fs?: boolean
+      /**
+       * Whether to initialize wasm asynchronously
+       */
+      asyncInit?: boolean
+      /**
+       * Whether to inject `buffer` to emnapi context
+       */
+      buffer?: boolean
+      /**
+       * Whether to emit custom events for errors in worker
+       */
+      errorEvent?: boolean
+    }
+  }
+
+  /**
+   * @deprecated binaryName instead
+   */
+  name?: string
+  /**
+   * @deprecated use packageName instead
+   */
+  package?: {
+    name?: string
+  }
+  /**
+   * @deprecated use targets instead
+   */
+  triples?: {
+    /**
+     * Whether enable default targets
+     */
+    defaults: boolean
+    /**
+     * Additional targets to be compiled for
+     */
+    additional?: string[]
+  }
+}
+
+export interface CommonPackageJsonFields {
+  name: string
+  version: string
+  description?: string
+  keywords?: string[]
+  author?: string
+  authors?: string[]
+  license?: string
+  cpu?: string[]
+  os?: string[]
+  libc?: string[]
+  files?: string[]
+  repository?: any
+  homepage?: any
+  engines?: Record<string, string>
+  publishConfig?: any
+  bugs?: any
+  // eslint-disable-next-line no-use-before-define
+  napi?: UserNapiConfig
+  type?: 'module' | 'commonjs'
+  scripts?: Record<string, string>
+
+  // modules
+  main?: string
+  module?: string
+  types?: string
+  browser?: string
+  exports?: any
+
+  dependencies?: Record<string, string>
+  devDependencies?: Record<string, string>
+  optionalDependencies?: Record<string, string>
+
+  ava?: {
+    timeout?: string
+  }
+}
+
+export type NapiConfig = Required<
+  Pick<UserNapiConfig, 'binaryName' | 'packageName' | 'npmClient'>
+> &
+  Pick<
+    UserNapiConfig,
+    | 'wasm'
+    | 'dtsHeader'
+    | 'dtsHeaderFile'
+    | 'constEnum'
+    | 'runtimeStringEnum'
+    | 'rootPublisher'
+  > & {
+    targets: Target[]
+    packageJson: CommonPackageJsonFields
+  }
+
+export async function readNapiConfig(
+  path: string,
+  configPath?: string,
+): Promise<NapiConfig> {
+  if (configPath && !(await fileExists(configPath))) {
+    throw new Error(`NAPI-RS config not found at ${configPath}`)
+  }
+  if (!(await fileExists(path))) {
+    throw new Error(`package.json not found at ${path}`)
+  }
+  // May support multiple config sources later on.
+  const content = await readFileAsync(path, 'utf8')
+  let pkgJson
+  try {
+    pkgJson = JSON.parse(content) as CommonPackageJsonFields
+  } catch (e) {
+    throw new Error(`Failed to parse package.json at ${path}`, {
+      cause: e,
+    })
+  }
+
+  let separatedConfig: UserNapiConfig | undefined
+  if (configPath) {
+    const configContent = await readFileAsync(configPath, 'utf8')
+    try {
+      separatedConfig = JSON.parse(configContent) as UserNapiConfig
+    } catch (e) {
+      throw new Error(`Failed to parse NAPI-RS config at ${configPath}`, {
+        cause: e,
+      })
+    }
+  }
+
+  const userNapiConfig = pkgJson.napi ?? {}
+  if (pkgJson.napi && separatedConfig) {
+    const pkgJsonPath = underline(path)
+    const configPathUnderline = underline(configPath!)
+    console.warn(
+      yellow(
+        `Both napi field in ${pkgJsonPath} and [NAPI-RS config](${configPathUnderline}) file are found, the NAPI-RS config file will be used.`,
+      ),
+    )
+  }
+  if (separatedConfig) {
+    Object.assign(userNapiConfig, separatedConfig)
+  }
+  const napiConfig: NapiConfig = merge(
+    {
+      binaryName: 'index',
+      packageName: pkgJson.name,
+      targets: [],
+      packageJson: pkgJson,
+      npmClient: 'npm',
+    },
+    omit(userNapiConfig, ['targets']),
+  )
+
+  let targets: string[] = userNapiConfig.targets ?? []
+
+  // compatible with old config
+  if (userNapiConfig?.name) {
+    console.warn(
+      yellow(
+        `[DEPRECATED] napi.name is deprecated, use napi.binaryName instead.`,
+      ),
+    )
+    napiConfig.binaryName = userNapiConfig.name
+  }
+
+  if (!targets.length) {
+    let deprecatedWarned = false
+    const warning = yellow(
+      `[DEPRECATED] napi.triples is deprecated, use napi.targets instead.`,
+    )
+    if (userNapiConfig.triples?.defaults) {
+      deprecatedWarned = true
+      console.warn(warning)
+      targets = targets.concat(DEFAULT_TARGETS)
+    }
+
+    if (userNapiConfig.triples?.additional?.length) {
+      targets = targets.concat(userNapiConfig.triples.additional)
+      if (!deprecatedWarned) {
+        console.warn(warning)
+      }
+    }
+  }
+
+  // find duplicate targets
+  const uniqueTargets = new Set(targets)
+  if (uniqueTargets.size !== targets.length) {
+    const duplicateTarget = targets.find(
+      (target, index) => targets.indexOf(target) !== index,
+    )
+    throw new Error(`Duplicate targets are not allowed: ${duplicateTarget}`)
+  }
+
+  // Entries name an artifact identity, and the identity is the triple Cargo
+  // compiles: `cargo zigbuild` splits a libc/ABI version suffix off
+  // `--target` (x86_64-unknown-linux-gnu.2.27 builds as
+  // x86_64-unknown-linux-gnu), and Cargo names a custom spec's artifact
+  // directory after the file stem — the same split `cargoTargetTriple`
+  // performs. Normalizing here keeps artifact file names, `napi.artifacts`
+  // and `create-npm-dirs`/`pre-publish` package dirs in agreement with what
+  // `napi build -x` emits.
+  const parsedTargets = targets.map((target) =>
+    parseTriple(cargoTargetTriple(target)),
+  )
+  const outputTargets = new Map<string, string>()
+  for (const [index, target] of parsedTargets.entries()) {
+    const previous = outputTargets.get(target.platformArchABI)
+    if (previous) {
+      throw new Error(
+        `Targets ${previous} and ${targets[index]} produce the same ${target.platformArchABI} artifact set. Choose one target spelling.`,
+      )
+    }
+    outputTargets.set(target.platformArchABI, targets[index])
+  }
+
+  napiConfig.targets = parsedTargets
+
+  return napiConfig
+}

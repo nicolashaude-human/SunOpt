@@ -1,0 +1,62 @@
+{
+  "snapshotPath": "C:\\NextJS\\SunOpt\\sunopt\\rust\\sunopt-node\\blackwell-benchmark.bin",
+  "deviceId": 0,
+  "repetitions": 1,
+  "annualStepCount": 35040,
+  "tankCount": 28,
+  "causalJobs": 981120,
+  "presortedMib": 68.4375,
+  "binaryKernelMs": 3271.55078125,
+  "binaryWallMs": 3275.5029,
+  "binaryChecksumHex": "5a04bc3f274c4f81",
+  "variants": [
+    {
+      "laneCount": 2,
+      "threadsPerBlock": 64,
+      "inputH2DMs": 15.8958,
+      "kernelMs": 3261.321044921875,
+      "resultD2HMs": 3.7133,
+      "wallMs": 3265.247,
+      "speedupVsBinary": 1.0031409262453959,
+      "reductionVsBinaryPercent": 0.313109171724443,
+      "statusMismatches": 0,
+      "cutMismatches": 0,
+      "maximumCutError": 0,
+      "averageSurvivalEvaluations": 5.280079908675799,
+      "maximumSurvivalEvaluations": 10,
+      "checksumHex": "5a04bc3f274c4f81"
+    },
+    {
+      "laneCount": 4,
+      "threadsPerBlock": 128,
+      "inputH2DMs": 15.4963,
+      "kernelMs": 3316.5234375,
+      "resultD2HMs": 3.7304,
+      "wallMs": 3320.4695,
+      "speedupVsBinary": 0.9864577584585553,
+      "reductionVsBinaryPercent": -1.3728151484769011,
+      "statusMismatches": 0,
+      "cutMismatches": 0,
+      "maximumCutError": 0,
+      "averageSurvivalEvaluations": 6.214927837573385,
+      "maximumSurvivalEvaluations": 13,
+      "checksumHex": "5a04bc3f274c4f81"
+    },
+    {
+      "laneCount": 8,
+      "threadsPerBlock": 256,
+      "inputH2DMs": 17.0096,
+      "kernelMs": 3792.53125,
+      "resultD2HMs": 3.8439,
+      "wallMs": 3796.6113,
+      "speedupVsBinary": 0.8627438105133386,
+      "reductionVsBinaryPercent": -15.909263887386576,
+      "statusMismatches": 0,
+      "cutMismatches": 0,
+      "maximumCutError": 0,
+      "averageSurvivalEvaluations": 7.7744231082844095,
+      "maximumSurvivalEvaluations": 17,
+      "checksumHex": "5a04bc3f274c4f81"
+    }
+  ]
+}

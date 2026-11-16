@@ -1,0 +1,128 @@
+# SunOpt Update Package Rules for LLMs
+
+This file defines the rules an LLM must follow when creating update packages for SunOpt.
+
+## Project root
+
+Expected project root:
+
+C:\NextJS\SunOpt\sunopt
+
+## Update installer
+
+Packages are installed by:
+
+python tools\update_watcher.py --watch
+
+Do not invent a package format. Read `tools/update_watcher.py` and follow its current schema exactly.
+
+## Package format
+
+New packages MUST use update format 2.
+
+Required ZIP root entries:
+
+- `manifest.json`
+- `manifest.sha256`
+
+`manifest.json` must contain at least:
+
+```json
+{
+  "format": 2,
+  "parent_sha256": "<64 lowercase hex characters>",
+  "files": {
+    "allowed/project/path": "<sha256 of exact payload bytes>"
+  },
+  "delete": []
+}
+```
+
+Rules:
+
+1. `format` must be the integer `2`.
+2. `parent_sha256` must equal the currently installed release hash.
+3. The current expected parent hash is also written to:
+   `updates/history/hash.txt`
+4. `files` is an OBJECT mapping project-relative POSIX paths to SHA-256 hashes.
+5. ZIP payload entries must match `files` exactly, plus `manifest.json` and
+   `manifest.sha256`.
+6. `manifest.sha256` contains the SHA-256 of the exact `manifest.json` bytes.
+7. Use `/` in package paths, never `\`.
+8. Never include duplicate ZIP members.
+9. Never include symlinks or special files.
+10. Never put extra documentation or patch files into forbidden paths.
+
+## Allowed update targets
+
+Follow the allow-list in `tools/update_watcher.py`.
+
+At the time this file was created, normal allowed prefixes include:
+
+- `src/`
+- `public/`
+- `rust/`
+- `data/localities/`
+
+Some explicitly allowed top-level files also exist.
+
+Never package files under protected paths such as:
+
+- `.git/`
+- `.next/`
+- `node_modules/`
+- `target/`
+- `updates/`
+- `tools/`
+- `cache/`
+- `__pycache__/`
+
+The watcher itself is NOT updated through a normal watcher package.
+
+## Hash chain
+
+The release ID for a format-2 package is:
+
+SHA256(exact manifest.json bytes)
+
+After successful installation:
+
+- `updates/installed-release.json` stores this release hash.
+- `updates/history/hash.txt` is overwritten with this same hash.
+- The next package MUST use this value as `parent_sha256`.
+
+If an installation fails, both project files and update metadata must be rolled back.
+
+## Modifying existing source files
+
+When a change requires editing an existing file such as `rust/sunopt-node/src/lib.rs`:
+
+1. Read the current file first.
+2. Modify that exact current content.
+3. Put the complete resulting file into the update package.
+4. Never replace an unknown existing file with a guessed minimal version.
+
+## SunOpt CUDA worker design
+
+Current intended acceleration configuration:
+
+- `cpuWorkers`: number of CPU worker jobs/threads.
+- `gpuWorkers`: number of persistent GPU worker contexts/streams.
+- A GPU worker is NOT a CUDA hardware thread.
+- GPU simulation data should remain resident in VRAM through hot search phases.
+- Avoid `cudaMalloc` and host/device copies inside hot loops.
+- Keep the existing CPU/Cranelift path as a fallback.
+
+## Before delivering a package
+
+Verify:
+
+- current parent hash was read from the project;
+- package uses `"format": 2`;
+- every target path is allowed;
+- every file hash matches exact payload bytes;
+- ZIP members exactly match manifest files plus the two metadata files;
+- `manifest.sha256` matches exact `manifest.json`;
+- existing files were based on their current contents;
+- no `tools/` or `updates/` payload entries are present.
+

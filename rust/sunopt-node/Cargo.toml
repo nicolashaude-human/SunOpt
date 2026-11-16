@@ -1,0 +1,17 @@
+# rust/sunopt-node/Cargo.toml
+
+[package]
+name = "sunopt-node"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3.14.2", features = ["napi8"] }
+napi-derive = "3.6.9"
+sunopt-core = { path = "../sunopt-core" }
+
+[build-dependencies]
+napi-build = "2.6.0"

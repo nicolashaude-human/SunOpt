@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "scanId": "REPLACE_WITH_SCAN_ID",
+  "actions": [
+    {
+      "path": "src/example.ts",
+      "action": "review",
+      "reason": "Example only. ChatGPT replaces this with the analysed result."
+    }
+  ]
+}

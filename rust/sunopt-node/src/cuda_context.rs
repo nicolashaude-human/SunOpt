@@ -1,0 +1,17865 @@
+use napi::bindgen_prelude::*;
+use napi_derive::napi;
+use std::ffi::{c_char, c_int, CStr};
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::ptr::NonNull;
+use std::time::Instant;
+
+#[repr(C)]
+struct SunoptCudaContextOpaque {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SunoptCausalParameters {
+    data_length: usize,
+    current_index: usize,
+    horizon_steps: usize,
+
+    current_storage_energy: f64,
+    minimum_reserve_energy: f64,
+    target_storage_energy: f64,
+    maximum_heat_pump_electrical_power: f64,
+    cop: f64,
+    requested_electrical_energy: f64,
+    energy_cut_level: f64,
+    time_step_hours: f64,
+    storage_energy_per_kelvin: f64,
+    storage_conductance_w_per_kelvin: f64,
+    storage_min_temperature: f64,
+    ambient_temperature: f64,
+    daily_heat_loss: f64,
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct SunoptCausalDynamic {
+    current_storage_energy: f64,
+    minimum_reserve_energy: f64,
+    requested_electrical_energy: f64,
+}
+
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SunoptNoSunshineTankParameters {
+    horizon_steps: usize,
+    protected_steps: usize,
+
+    time_step_hours: f64,
+
+    maximum_heat_pump_electrical_power: f64,
+    cop: f64,
+
+    initial_waterline_power: f64,
+
+    target_storage_energy: f64,
+
+    storage_energy_per_kelvin: f64,
+    storage_conductance_w_per_kelvin: f64,
+    storage_min_temperature: f64,
+    ambient_temperature: f64,
+    daily_heat_loss: f64,
+}
+
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct SunoptCausalResult {
+    cut_level_power: f64,
+    normal_plan_survives: c_int,
+    maximum_pv_plan_survives: c_int,
+    survival_checks: u32,
+    binary_search_iterations: u32,
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct SunoptCudaProfile {
+    causal_calls: u64,
+    causal_jobs: u64,
+
+    parameter_h2d_ms: f64,
+    kernel_ms: f64,
+    result_d2h_ms: f64,
+    gpu_total_ms: f64,
+    host_wait_ms: f64,
+    wall_ms: f64,
+
+    profiled_search_jobs: u64,
+
+    energy_phase_cycles: u64,
+    boundary_phase_cycles: u64,
+    radix_round_0_cycles: u64,
+    radix_round_1_cycles: u64,
+    radix_round_2_cycles: u64,
+    radix_round_3_cycles: u64,
+
+    boundary_storage_steps: u64,
+    radix_round_0_storage_steps: u64,
+    radix_round_1_storage_steps: u64,
+    radix_round_2_storage_steps: u64,
+    radix_round_3_storage_steps: u64,
+}
+
+unsafe extern "C" {
+    fn sunopt_cuda_create(
+        device_id: c_int,
+        out_context: *mut *mut SunoptCudaContextOpaque,
+    ) -> c_int;
+
+    fn sunopt_cuda_destroy(
+        context: *mut SunoptCudaContextOpaque,
+    ) -> c_int;
+
+    fn sunopt_cuda_device_id(
+        context: *const SunoptCudaContextOpaque,
+        out_device_id: *mut c_int,
+    ) -> c_int;
+
+    fn sunopt_cuda_stream_synchronize(
+        context: *mut SunoptCudaContextOpaque,
+    ) -> c_int;
+
+    fn sunopt_cuda_reserve(
+        context: *mut SunoptCudaContextOpaque,
+        input_bytes: usize,
+        workspace_bytes: usize,
+        result_bytes: usize,
+    ) -> c_int;
+
+    fn sunopt_cuda_capacities(
+        context: *const SunoptCudaContextOpaque,
+        out_input_bytes: *mut usize,
+        out_workspace_bytes: *mut usize,
+        out_result_bytes: *mut usize,
+    ) -> c_int;
+
+    fn sunopt_cuda_upload_causal_arrays(
+        context: *mut SunoptCudaContextOpaque,
+        export_power: *const f64,
+        demand_energy: *const f64,
+        length: usize,
+    ) -> c_int;
+
+    fn sunopt_cuda_run_causal(
+        context: *mut SunoptCudaContextOpaque,
+        parameters: *const SunoptCausalParameters,
+        host_result: *mut SunoptCausalResult,
+    ) -> c_int;
+
+    fn sunopt_cuda_run_causal_batch(
+        context: *mut SunoptCudaContextOpaque,
+        host_parameters: *const SunoptCausalParameters,
+        job_count: usize,
+        host_results: *mut SunoptCausalResult,
+    ) -> c_int;
+
+
+    fn sunopt_cuda_configure_causal_static_parameters(
+        context: *mut SunoptCudaContextOpaque,
+        host_parameters: *const SunoptCausalParameters,
+        job_count: usize,
+    ) -> c_int;
+
+
+    fn sunopt_cuda_run_causal_dynamic_batch(
+        context: *mut SunoptCudaContextOpaque,
+        current_index: usize,
+        horizon_steps: usize,
+        host_dynamic_parameters: *const SunoptCausalDynamic,
+        job_count: usize,
+        host_cut_level_results: *mut f64,
+    ) -> c_int;
+
+
+// SUNOPT_APPROACH_A_SINGLE_STEP_GRAPH_FFI_BEGIN
+    fn sunopt_cuda_create_causal_step_graph(
+        context: *mut SunoptCudaContextOpaque,
+        job_count: usize,
+        out_graph: *mut *mut std::ffi::c_void,
+    ) -> c_int;
+
+    fn sunopt_cuda_run_causal_step_graph(
+        graph: *mut std::ffi::c_void,
+        current_index: usize,
+        horizon_steps: usize,
+        host_dynamic_parameters: *const SunoptCausalDynamic,
+        job_count: usize,
+        host_cut_level_results: *mut f64,
+    ) -> c_int;
+
+    fn sunopt_cuda_destroy_causal_step_graph(
+        graph: *mut std::ffi::c_void,
+    ) -> c_int;
+    // SUNOPT_APPROACH_A_SINGLE_STEP_GRAPH_FFI_END
+
+    fn sunopt_cuda_precompute_no_sunshine_waterlines(
+        context: *mut SunoptCudaContextOpaque,
+        host_parameters: *const SunoptNoSunshineTankParameters,
+        tank_count: usize,
+        host_waterlines: *mut f64,
+    ) -> c_int;
+
+    // SUNOPT_BLACKWELL_ANNUAL_GRAPH_REPLAY_FFI_BEGIN
+    fn sunopt_cuda_run_causal_graph_replay(
+        context:
+            *mut SunoptCudaContextOpaque,
+
+        host_current_indices:
+            *const u32,
+
+        host_horizon_steps:
+            *const u32,
+
+        host_dynamic_parameters:
+            *const SunoptCausalDynamic,
+
+        step_count:
+            usize,
+
+        tank_count:
+            usize,
+
+        repetitions:
+            u32,
+
+        host_results:
+            *mut f64,
+
+        host_wall_ms:
+            *mut f64,
+
+        host_gpu_ms:
+            *mut f64,
+
+        out_graph_build_ms:
+            *mut f64,
+
+        out_result_d2h_ms:
+            *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_ANNUAL_GRAPH_REPLAY_FFI_END
+
+
+// SUNOPT_BLACKWELL_MAX_AFFINE_TREE_FFI_BEGIN
+    fn sunopt_cuda_run_max_affine_tree_benchmark(
+        device_id:
+            c_int,
+
+        host_export_power:
+            *const f64,
+
+        host_demand_energy:
+            *const f64,
+
+        data_length:
+            usize,
+
+        host_tank_parameters:
+            *const f64,
+
+        tank_count:
+            usize,
+
+        host_current_indices:
+            *const u32,
+
+        host_horizon_steps:
+            *const u32,
+
+        host_dynamic_values:
+            *const f64,
+
+        host_cut_levels:
+            *const f64,
+
+        step_count:
+            usize,
+
+        repetitions:
+            u32,
+
+        host_survival:
+            *mut u32,
+
+        out_h2d_ms:
+            *mut f64,
+
+        out_kernel_total_ms:
+            *mut f64,
+
+        out_d2h_ms:
+            *mut f64,
+
+        out_wall_ms:
+            *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_MAX_AFFINE_TREE_FFI_END
+
+
+// SUNOPT_BLACKWELL_PIECEWISE_AFFINE_B3_FFI_BEGIN
+    fn sunopt_cuda_run_piecewise_affine_b3_benchmark(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        host_energy_cut_levels: *const f64,
+        step_count: usize,
+        max_correction_iterations: u32,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_iterations: *mut u32,
+        host_evaluations: *mut u32,
+        host_bracket_width: *mut f64,
+        out_upload_ms: *mut f64,
+        out_kernel_total_ms: *mut f64,
+        out_download_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_PIECEWISE_AFFINE_B3_FFI_END
+
+
+    // SUNOPT_BLACKWELL_B14C_WARP32_FFI_BEGIN
+    fn sunopt_cuda_run_b14c_warp32_benchmark(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        host_energy_cut_levels: *const f64,
+        step_count: usize,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_max_segments: *mut u32,
+        host_max_work_segments: *mut u32,
+        out_upload_ms: *mut f64,
+        out_kernel_total_ms: *mut f64,
+        out_download_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_B14C_WARP32_FFI_END
+
+
+    // SUNOPT_BLACKWELL_B14D_SORTED_MERGE_FFI_BEGIN
+    fn sunopt_cuda_run_b14d_warp32_merge_benchmark(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        host_energy_cut_levels: *const f64,
+        step_count: usize,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_max_segments: *mut u32,
+        host_max_work_segments: *mut u32,
+        out_upload_ms: *mut f64,
+        out_kernel_total_ms: *mut f64,
+        out_download_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_B14D_SORTED_MERGE_FFI_END
+
+    // SUNOPT_BLACKWELL_B14E_WARP_PARALLEL_FFI_BEGIN
+    fn sunopt_cuda_run_b14e_warp_parallel_benchmark(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        host_energy_cut_levels: *const f64,
+        step_count: usize,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_max_segments: *mut u32,
+        host_max_work_segments: *mut u32,
+        out_upload_ms: *mut f64,
+        out_kernel_total_ms: *mut f64,
+        out_download_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_B14E_WARP_PARALLEL_FFI_END
+
+    // SUNOPT_BLACKWELL_B14F_WARP_PRECHECK_FFI_BEGIN
+    fn sunopt_cuda_run_b14f_warp_precheck_benchmark(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        host_energy_cut_levels: *const f64,
+        step_count: usize,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_max_segments: *mut u32,
+        host_max_work_segments: *mut u32,
+        out_upload_ms: *mut f64,
+        out_kernel_total_ms: *mut f64,
+        out_download_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_B14F_WARP_PRECHECK_FFI_END
+
+    // SUNOPT_BLACKWELL_B14G_WARP_BINARY_FFI_BEGIN
+    fn sunopt_cuda_run_b14g_warp_binary_benchmark(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        host_energy_cut_levels: *const f64,
+        step_count: usize,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_max_segments: *mut u32,
+        host_max_work_segments: *mut u32,
+        out_upload_ms: *mut f64,
+        out_kernel_total_ms: *mut f64,
+        out_download_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_B14G_WARP_BINARY_FFI_END
+
+
+// SUNOPT_BLACKWELL_B14I1_LOCKSTEP_FFI_BEGIN
+    fn sunopt_cuda_run_b14i1_warp_binary_lockstep_benchmark(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        host_energy_cut_levels: *const f64,
+        step_count: usize,
+        host_cut_results: *mut f64,
+        out_static_h2d_ms: *mut f64,
+        out_dynamic_h2d_ms: *mut f64,
+        out_kernel_ms: *mut f64,
+        out_result_d2h_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_B14I1_LOCKSTEP_FFI_END
+
+// SUNOPT_BLACKWELL_B14J_SMALL_BATCH_FFI_BEGIN
+    fn sunopt_cuda_run_b14j_small_batch_benchmark(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        host_energy_cut_levels: *const f64,
+        step_count: usize,
+        block_threads: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        out_static_h2d_ms: *mut f64,
+        out_dynamic_enqueue_ms: *mut f64,
+        out_kernel_ms: *mut f64,
+        out_result_wait_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_B14J_SMALL_BATCH_FFI_END
+
+// SUNOPT_BLACKWELL_B14K_SPECULATIVE_TREE_FFI_BEGIN
+    fn sunopt_cuda_run_b14k_speculative_tree_benchmark(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        host_energy_cut_levels: *const f64,
+        step_count: usize,
+        tree_depth: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        out_static_h2d_ms: *mut f64,
+        out_dynamic_enqueue_ms: *mut f64,
+        out_kernel_ms: *mut f64,
+        out_result_wait_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_B14K_SPECULATIVE_TREE_FFI_END
+
+// SUNOPT_BLACKWELL_B14L_PACKED_TRANSPORT_FFI_BEGIN
+    fn sunopt_cuda_run_b14l_packed_transport_benchmark(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        host_energy_cut_levels: *const f64,
+        step_count: usize,
+        pinned_host_memory: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        out_static_h2d_ms: *mut f64,
+        out_host_pack_ms: *mut f64,
+        out_input_enqueue_ms: *mut f64,
+        out_kernel_ms: *mut f64,
+        out_result_wait_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_B14L_PACKED_TRANSPORT_FFI_END
+
+// SUNOPT_BLACKWELL_B14M_FP32_FFI_BEGIN
+    fn sunopt_cuda_run_b14m_fp32_benchmark(
+        device_id: c_int,
+        host_export_power: *const f32,
+        host_demand_energy: *const f32,
+        data_length: usize,
+        host_tank_parameters: *const f32,
+        tank_count: usize,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f32,
+        host_energy_cut_levels: *const f32,
+        step_count: usize,
+        host_cut_results: *mut f32,
+        host_status: *mut u32,
+        out_static_h2d_ms: *mut f64,
+        out_input_enqueue_ms: *mut f64,
+        out_kernel_ms: *mut f64,
+        out_result_wait_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_B14M_FP32_FFI_END
+
+// SUNOPT_BLACKWELL_B14O_ROUNDTRIP_FFI_BEGIN
+    fn sunopt_cuda_run_b14o_fp32_packed_benchmark(
+        device_id: c_int,
+        host_export_power: *const f32,
+        host_demand_energy: *const f32,
+        data_length: usize,
+        host_tank_parameters: *const f32,
+        tank_count: usize,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f32,
+        host_energy_cut_levels: *const f32,
+        step_count: usize,
+        pinned_input: u32,
+        wait_mode: u32,
+        mapped_output: u32,
+        schedule_spin: u32,
+        host_cut_results: *mut f32,
+        host_status: *mut u32,
+        out_static_h2d_ms: *mut f64,
+        out_host_pack_ms: *mut f64,
+        out_input_enqueue_ms: *mut f64,
+        out_kernel_ms: *mut f64,
+        out_result_wait_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_B14O_ROUNDTRIP_FFI_END
+
+// SUNOPT_BLACKWELL_B14P_PRODUCTION_B_FFI_BEGIN
+    fn sunopt_cuda_b14p_create(
+        device_id: c_int,
+        host_export_power: *const f32,
+        host_demand_energy: *const f32,
+        data_length: usize,
+        out_context:
+            *mut *mut std::ffi::c_void,
+    ) -> c_int;
+
+    fn sunopt_cuda_b14p_destroy(
+        context: *mut std::ffi::c_void,
+    ) -> c_int;
+
+    fn sunopt_cuda_b14p_configure(
+        context: *mut std::ffi::c_void,
+        host_tank_parameters:
+            *const f32,
+        tank_count: usize,
+    ) -> c_int;
+
+    fn sunopt_cuda_b14p_run_step(
+        context: *mut std::ffi::c_void,
+        current_index: usize,
+        horizon_steps: usize,
+        host_dynamic_values:
+            *const f32,
+        tank_count: usize,
+        host_cut_results: *mut f32,
+        host_status: *mut u32,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_B14P_PRODUCTION_B_FFI_END
+
+// SUNOPT_BLACKWELL_DIGITAL_HP_BREAKPOINTS_FFI_BEGIN
+    fn sunopt_cuda_run_digital_hp_breakpoints(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        step_count: usize,
+        search_iterations: u32,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_survival_evaluations: *mut u32,
+        out_kernel_total_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_DIGITAL_HP_BREAKPOINTS_FFI_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_LOCKSTEP_CANDIDATE_FFI_BEGIN
+    fn sunopt_cuda_run_digital_lockstep_candidate(
+        device_id:
+            c_int,
+
+        host_export_power:
+            *const f64,
+
+        host_demand_energy:
+            *const f64,
+
+        data_length:
+            usize,
+
+        host_tank_parameters:
+            *const f64,
+
+        tank_count:
+            usize,
+
+        host_current_indices:
+            *const u32,
+
+        host_horizon_steps:
+            *const u32,
+
+        host_dynamic_values:
+            *const f64,
+
+        step_count:
+            usize,
+
+        search_iterations:
+            u32,
+
+        repetitions:
+            u32,
+
+        host_cut_results:
+            *mut f64,
+
+        host_status:
+            *mut u32,
+
+        host_survival_evaluations:
+            *mut u32,
+
+        out_static_h2d_ms:
+            *mut f64,
+
+        out_gpu_total_ms:
+            *mut f64,
+
+        out_host_wait_ms:
+            *mut f64,
+
+        out_wall_ms:
+            *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_DIGITAL_LOCKSTEP_CANDIDATE_FFI_END
+
+
+    // SUNOPT_BLACKWELL_DIGITAL_GRAPH_AB_FFI_BEGIN
+    fn sunopt_cuda_run_digital_lockstep_graph_candidate(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        step_count: usize,
+        search_iterations: u32,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_survival_evaluations: *mut u32,
+        out_static_h2d_ms: *mut f64,
+        out_graph_build_ms: *mut f64,
+        out_gpu_total_ms: *mut f64,
+        out_host_wait_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_DIGITAL_GRAPH_AB_FFI_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_PRESORT_AB_FFI_BEGIN
+    fn sunopt_cuda_run_digital_lockstep_presorted_candidate(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_presorted_export_windows: *const f64,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        step_count: usize,
+        search_iterations: u32,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_survival_evaluations: *mut u32,
+        out_static_h2d_ms: *mut f64,
+        out_presorted_h2d_ms: *mut f64,
+        out_gpu_total_ms: *mut f64,
+        out_host_wait_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_DIGITAL_PRESORT_AB_FFI_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_WARP_TREE_AB_FFI_BEGIN
+    fn sunopt_cuda_run_digital_lockstep_presorted_warp_candidate(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_presorted_export_windows: *const f64,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        step_count: usize,
+        search_iterations: u32,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_survival_evaluations: *mut u32,
+        out_static_h2d_ms: *mut f64,
+        out_presorted_h2d_ms: *mut f64,
+        out_gpu_total_ms: *mut f64,
+        out_host_wait_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_DIGITAL_WARP_TREE_AB_FFI_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_PIECEWISE_ZERO_AB_FFI_BEGIN
+    fn sunopt_cuda_run_digital_lockstep_piecewise_zero_candidate(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_presorted_export_windows: *const f64,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        step_count: usize,
+        search_iterations: u32,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_survival_evaluations: *mut u32,
+        out_static_h2d_ms: *mut f64,
+        out_presorted_h2d_ms: *mut f64,
+        out_gpu_total_ms: *mut f64,
+        out_host_wait_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_DIGITAL_PIECEWISE_ZERO_AB_FFI_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_RESIDENT_CHUNK_FFI_BEGIN
+    fn sunopt_cuda_run_digital_resident_chunk_replay(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_presorted_export_windows: *const f64,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        step_count: usize,
+        search_iterations: u32,
+        chunk_steps: u32,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_survival_evaluations: *mut u32,
+        out_input_h2d_ms: *mut f64,
+        out_kernel_ms: *mut f64,
+        out_result_d2h_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_DIGITAL_RESIDENT_CHUNK_FFI_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_RESIDENT_JOB_BATCH_FFI_BEGIN
+    fn sunopt_cuda_run_digital_resident_job_batch(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_presorted_export_windows: *const f64,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        step_count: usize,
+        search_iterations: u32,
+        jobs_per_launch: u32,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_survival_evaluations: *mut u32,
+        out_input_h2d_ms: *mut f64,
+        out_kernel_ms: *mut f64,
+        out_result_d2h_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_DIGITAL_RESIDENT_JOB_BATCH_FFI_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_MULTILANE_SEARCH_FFI_BEGIN
+    fn sunopt_cuda_run_digital_multilane_lockstep(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_presorted_export_windows: *const f64,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        step_count: usize,
+        lane_count: u32,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_survival_evaluations: *mut u32,
+        out_input_h2d_ms: *mut f64,
+        out_kernel_ms: *mut f64,
+        out_result_d2h_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_DIGITAL_MULTILANE_SEARCH_FFI_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_CLUSTER4_FFI_BEGIN
+    fn sunopt_cuda_run_digital_cluster4_lockstep(
+        device_id: c_int,
+        host_export_power: *const f64,
+        host_demand_energy: *const f64,
+        data_length: usize,
+        host_tank_parameters: *const f64,
+        tank_count: usize,
+        host_presorted_export_windows: *const f64,
+        host_current_indices: *const u32,
+        host_horizon_steps: *const u32,
+        host_dynamic_values: *const f64,
+        step_count: usize,
+        repetitions: u32,
+        host_cut_results: *mut f64,
+        host_status: *mut u32,
+        host_survival_evaluations: *mut u32,
+        out_input_h2d_ms: *mut f64,
+        out_kernel_ms: *mut f64,
+        out_result_d2h_ms: *mut f64,
+        out_wall_ms: *mut f64,
+    ) -> c_int;
+    // SUNOPT_BLACKWELL_DIGITAL_CLUSTER4_FFI_END
+
+
+    fn sunopt_cuda_get_profile(
+        context: *const SunoptCudaContextOpaque,
+        out_profile: *mut SunoptCudaProfile,
+    ) -> c_int;
+
+    fn sunopt_cuda_reset_profile(
+        context: *mut SunoptCudaContextOpaque,
+    ) -> c_int;
+
+    fn sunopt_cuda_error_string(
+        error_code: c_int,
+    ) -> *const c_char;
+}
+
+fn cuda_error(
+    operation: &str,
+    code: c_int,
+) -> Error {
+    let message = unsafe {
+        let ptr =
+            sunopt_cuda_error_string(
+                code,
+            );
+
+        if ptr.is_null() {
+            format!(
+                "CUDA error {code}"
+            )
+        } else {
+            CStr::from_ptr(ptr)
+                .to_string_lossy()
+                .into_owned()
+        }
+    };
+
+    Error::from_reason(
+        format!(
+            "{operation} failed: {message} \
+             (CUDA error {code})"
+        ),
+    )
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+)]
+pub struct CudaBufferCapacities {
+    pub input_bytes: usize,
+    pub workspace_bytes: usize,
+    pub result_bytes: usize,
+}
+
+#[derive(Debug)]
+pub struct CudaSimulationContext {
+    raw:
+        NonNull<
+            SunoptCudaContextOpaque
+        >,
+}
+
+unsafe impl Send
+    for CudaSimulationContext
+{
+}
+
+impl CudaSimulationContext {
+    pub fn new(
+        device_id: i32,
+    ) -> Result<Self> {
+        let mut raw =
+            std::ptr::null_mut();
+
+        let code = unsafe {
+            sunopt_cuda_create(
+                device_id as c_int,
+                &mut raw,
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_create",
+                    code,
+                ),
+            );
+        }
+
+        let raw =
+            NonNull::new(raw)
+                .ok_or_else(|| {
+                    Error::from_reason(
+                        "sunopt_cuda_create returned \
+                         success with a null context",
+                    )
+                })?;
+
+        Ok(Self { raw })
+    }
+
+    pub fn device_id(
+        &self,
+    ) -> Result<i32> {
+        let mut device_id:
+            c_int = -1;
+
+        let code = unsafe {
+            sunopt_cuda_device_id(
+                self.raw.as_ptr(),
+                &mut device_id,
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_device_id",
+                    code,
+                ),
+            );
+        }
+
+        Ok(
+            device_id as i32,
+        )
+    }
+
+    pub fn synchronize(
+        &mut self,
+    ) -> Result<()> {
+        let code = unsafe {
+            sunopt_cuda_stream_synchronize(
+                self.raw.as_ptr(),
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_stream_synchronize",
+                    code,
+                ),
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn reserve(
+        &mut self,
+        input_bytes: usize,
+        workspace_bytes: usize,
+        result_bytes: usize,
+    ) -> Result<()> {
+        let code = unsafe {
+            sunopt_cuda_reserve(
+                self.raw.as_ptr(),
+                input_bytes,
+                workspace_bytes,
+                result_bytes,
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_reserve",
+                    code,
+                ),
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn capacities(
+        &self,
+    ) -> Result<
+        CudaBufferCapacities
+    > {
+        let mut input_bytes =
+            0usize;
+
+        let mut workspace_bytes =
+            0usize;
+
+        let mut result_bytes =
+            0usize;
+
+        let code = unsafe {
+            sunopt_cuda_capacities(
+                self.raw.as_ptr(),
+                &mut input_bytes,
+                &mut workspace_bytes,
+                &mut result_bytes,
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_capacities",
+                    code,
+                ),
+            );
+        }
+
+        Ok(
+            CudaBufferCapacities {
+                input_bytes,
+                workspace_bytes,
+                result_bytes,
+            },
+        )
+    }
+
+    pub fn upload_causal_arrays(
+        &mut self,
+        export_power: &[f64],
+        demand_energy: &[f64],
+    ) -> Result<()> {
+        if export_power.is_empty() {
+            return Err(
+                Error::from_reason(
+                    "exportPower must not be empty.",
+                ),
+            );
+        }
+
+        if (
+            export_power.len() !=
+            demand_energy.len()
+        ) {
+            return Err(
+                Error::from_reason(
+                    "exportPower and demandEnergy \
+                     must have equal length.",
+                ),
+            );
+        }
+
+        let code = unsafe {
+            sunopt_cuda_upload_causal_arrays(
+                self.raw.as_ptr(),
+                export_power.as_ptr(),
+                demand_energy.as_ptr(),
+                export_power.len(),
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_upload_causal_arrays",
+                    code,
+                ),
+            );
+        }
+
+        Ok(())
+    }
+
+    fn run_causal(
+        &mut self,
+        parameters:
+            SunoptCausalParameters,
+    ) -> Result<
+        SunoptCausalResult
+    > {
+        let mut result =
+            SunoptCausalResult::default();
+
+        let code = unsafe {
+            sunopt_cuda_run_causal(
+                self.raw.as_ptr(),
+                &parameters,
+                &mut result,
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_run_causal",
+                    code,
+                ),
+            );
+        }
+
+        Ok(result)
+    }
+
+    fn run_causal_batch(
+        &mut self,
+        parameters:
+            &[SunoptCausalParameters],
+    ) -> Result<
+        Vec<SunoptCausalResult>
+    > {
+        if parameters.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut results =
+            vec![
+                SunoptCausalResult::default();
+                parameters.len()
+            ];
+
+        let code = unsafe {
+            sunopt_cuda_run_causal_batch(
+                self.raw.as_ptr(),
+                parameters.as_ptr(),
+                parameters.len(),
+                results.as_mut_ptr(),
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_run_causal_batch",
+                    code,
+                ),
+            );
+        }
+
+        Ok(results)
+    }
+
+    fn configure_causal_static_parameters(
+        &mut self,
+        parameters:
+            &[SunoptCausalParameters],
+    ) -> Result<()> {
+        if parameters.is_empty() {
+            return Err(
+                Error::from_reason(
+                    "Static causal parameter configuration cannot be empty.",
+                ),
+            );
+        }
+
+
+        let code = unsafe {
+            sunopt_cuda_configure_causal_static_parameters(
+                self.raw.as_ptr(),
+                parameters.as_ptr(),
+                parameters.len(),
+            )
+        };
+
+
+        if (
+            code !=
+            0
+        ) {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_configure_causal_static_parameters",
+                    code,
+                ),
+            );
+        }
+
+
+        Ok(())
+    }
+
+
+    fn run_causal_dynamic_batch_into(
+        &mut self,
+        current_index:
+            usize,
+
+        horizon_steps:
+            usize,
+
+        dynamic:
+            &[SunoptCausalDynamic],
+
+        output:
+            &mut [f64],
+    ) -> Result<()> {
+        if dynamic.is_empty() {
+            if (
+                !output.is_empty()
+            ) {
+                return Err(
+                    Error::from_reason(
+                        "Empty dynamic batch requires empty output.",
+                    ),
+                );
+            }
+
+            return Ok(());
+        }
+
+
+        if (
+            dynamic.len() >
+            32
+        ) {
+            return Err(
+                Error::from_reason(
+                    "Kernel-argument dynamic batch supports at most 32 tanks.",
+                ),
+            );
+        }
+
+
+        if (
+            output.len() !=
+            dynamic.len()
+        ) {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Dynamic result buffer length must be {}; received {}.",
+                        dynamic.len(),
+                        output.len(),
+                    ),
+                ),
+            );
+        }
+
+
+        let code = unsafe {
+            sunopt_cuda_run_causal_dynamic_batch(
+                self.raw.as_ptr(),
+                current_index,
+                horizon_steps,
+                dynamic.as_ptr(),
+                dynamic.len(),
+                output.as_mut_ptr(),
+            )
+        };
+
+
+        if (
+            code !=
+            0
+        ) {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_run_causal_dynamic_batch",
+                    code,
+                ),
+            );
+        }
+
+
+        Ok(())
+    }
+
+
+    fn run_causal_dynamic_batch(
+        &mut self,
+        current_index:
+            usize,
+
+        horizon_steps:
+            usize,
+
+        dynamic:
+            &[SunoptCausalDynamic],
+    ) -> Result<Vec<f64>> {
+        let mut cut_levels =
+            vec![
+                0.0f64;
+                dynamic.len()
+            ];
+
+
+        self.run_causal_dynamic_batch_into(
+            current_index,
+            horizon_steps,
+            dynamic,
+            &mut cut_levels,
+        )?;
+
+
+        Ok(
+            cut_levels,
+        )
+    }
+
+
+    fn precompute_no_sunshine_waterlines(
+        &mut self,
+        parameters:
+            &[SunoptNoSunshineTankParameters],
+
+        data_length:
+            usize,
+    ) -> Result<Vec<f64>> {
+        if parameters.is_empty() {
+            return Ok(
+                Vec::new(),
+            );
+        }
+
+        let total_jobs =
+            parameters
+                .len()
+                .checked_mul(
+                    data_length,
+                )
+                .ok_or_else(|| {
+                    Error::from_reason(
+                        "No-sunshine CUDA result size overflow.",
+                    )
+                })?;
+
+        let mut waterlines =
+            vec![
+                0.0f64;
+                total_jobs
+            ];
+
+        let code = unsafe {
+            sunopt_cuda_precompute_no_sunshine_waterlines(
+                self.raw.as_ptr(),
+                parameters.as_ptr(),
+                parameters.len(),
+                waterlines.as_mut_ptr(),
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_precompute_no_sunshine_waterlines",
+                    code,
+                ),
+            );
+        }
+
+        Ok(
+            waterlines,
+        )
+    }
+
+
+    fn causal_profile(
+        &self,
+    ) -> Result<SunoptCudaProfile> {
+        let mut profile =
+            SunoptCudaProfile::default();
+
+        let code = unsafe {
+            sunopt_cuda_get_profile(
+                self.raw.as_ptr(),
+                &mut profile,
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_get_profile",
+                    code,
+                ),
+            );
+        }
+
+        Ok(profile)
+    }
+
+    fn reset_causal_profile(
+        &mut self,
+    ) -> Result<()> {
+        let code = unsafe {
+            sunopt_cuda_reset_profile(
+                self.raw.as_ptr(),
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_reset_profile",
+                    code,
+                ),
+            );
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop
+    for CudaSimulationContext
+{
+    fn drop(&mut self) {
+        let _ = unsafe {
+            sunopt_cuda_destroy(
+                self.raw.as_ptr(),
+            )
+        };
+    }
+}
+
+const BLACKWELL_SNAPSHOT_MAGIC: &[u8; 16] = b"SUNOPT-BW-BENCH\0";
+const BLACKWELL_SNAPSHOT_VERSION: u32 = 1;
+const BLACKWELL_CONFIG_STRIDE: usize = 12;
+const BLACKWELL_DYNAMIC_STRIDE: usize = 3;
+
+#[derive(Clone)]
+struct BlackwellReplayStep {
+    current_index: u32,
+    horizon_steps: u32,
+    dynamic: Vec<f64>,
+}
+
+struct BlackwellReplaySnapshot {
+    data_length: usize,
+    tank_count: usize,
+    export_power: Vec<f64>,
+    demand_energy: Vec<f64>,
+    packed_config: Vec<f64>,
+    steps: Vec<BlackwellReplayStep>,
+}
+
+struct BlackwellCapture {
+    path: PathBuf,
+    data_length: usize,
+    export_power: Vec<f64>,
+    demand_energy: Vec<f64>,
+    packed_config: Vec<f64>,
+    steps: Vec<BlackwellReplayStep>,
+}
+
+fn blackwell_default_snapshot_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("blackwell-benchmark.bin")
+}
+
+fn blackwell_capture_requested(path: &Path) -> bool {
+    match std::env::var("SUNOPT_BLACKWELL_CAPTURE") {
+        Ok(value) => {
+            let value = value.trim().to_ascii_lowercase();
+            if value == "0" || value == "false" || value == "off" {
+                false
+            } else if value == "1" || value == "true" || value == "on" || value == "force" {
+                true
+            } else {
+                !path.exists()
+            }
+        }
+        Err(_) => !path.exists(),
+    }
+}
+
+fn write_u32(writer: &mut File, value: u32) -> std::io::Result<()> {
+    writer.write_all(&value.to_le_bytes())
+}
+
+fn write_f64_slice(writer: &mut File, values: &[f64]) -> std::io::Result<()> {
+    for value in values {
+        writer.write_all(&value.to_bits().to_le_bytes())?;
+    }
+    Ok(())
+}
+
+fn read_u32(reader: &mut File) -> std::io::Result<u32> {
+    let mut bytes = [0u8; 4];
+    reader.read_exact(&mut bytes)?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
+fn read_f64_vec(reader: &mut File, count: usize) -> std::io::Result<Vec<f64>> {
+    let mut values = Vec::with_capacity(count);
+    for _ in 0..count {
+        let mut bytes = [0u8; 8];
+        reader.read_exact(&mut bytes)?;
+        values.push(f64::from_bits(u64::from_le_bytes(bytes)));
+    }
+    Ok(values)
+}
+
+impl BlackwellCapture {
+    fn new(path: PathBuf, export_power: &[f64], demand_energy: &[f64]) -> Self {
+        Self {
+            path,
+            data_length: export_power.len(),
+            export_power: export_power.to_vec(),
+            demand_energy: demand_energy.to_vec(),
+            packed_config: Vec::new(),
+            steps: Vec::with_capacity(export_power.len()),
+        }
+    }
+
+    fn configure(&mut self, packed: &[f64]) {
+        self.packed_config.clear();
+        self.packed_config.extend_from_slice(packed);
+        self.steps.clear();
+    }
+
+    fn push_step(&mut self, current_index: u32, horizon_steps: u32, dynamic: &[f64]) {
+        self.steps.push(BlackwellReplayStep {
+            current_index,
+            horizon_steps,
+            dynamic: dynamic.to_vec(),
+        });
+    }
+
+    fn complete(&self) -> bool {
+        !self.packed_config.is_empty() && self.steps.len() == self.data_length
+    }
+
+    fn write_snapshot(&self) -> std::io::Result<()> {
+        let tank_count = self.packed_config.len() / BLACKWELL_CONFIG_STRIDE;
+        if tank_count == 0 || self.packed_config.len() != tank_count * BLACKWELL_CONFIG_STRIDE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid Blackwell packed configuration.",
+            ));
+        }
+        let expected_dynamic = tank_count * BLACKWELL_DYNAMIC_STRIDE;
+        if self.steps.iter().any(|step| step.dynamic.len() != expected_dynamic) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid Blackwell dynamic replay stride.",
+            ));
+        }
+
+        let temporary_path = self.path.with_extension("bin.tmp");
+        let mut writer = File::create(&temporary_path)?;
+        writer.write_all(BLACKWELL_SNAPSHOT_MAGIC)?;
+        write_u32(&mut writer, BLACKWELL_SNAPSHOT_VERSION)?;
+        write_u32(&mut writer, self.data_length as u32)?;
+        write_u32(&mut writer, tank_count as u32)?;
+        write_u32(&mut writer, self.steps.len() as u32)?;
+        write_u32(&mut writer, BLACKWELL_CONFIG_STRIDE as u32)?;
+        write_u32(&mut writer, BLACKWELL_DYNAMIC_STRIDE as u32)?;
+        write_f64_slice(&mut writer, &self.export_power)?;
+        write_f64_slice(&mut writer, &self.demand_energy)?;
+        write_f64_slice(&mut writer, &self.packed_config)?;
+        for step in &self.steps {
+            write_u32(&mut writer, step.current_index)?;
+            write_u32(&mut writer, step.horizon_steps)?;
+            write_f64_slice(&mut writer, &step.dynamic)?;
+        }
+        writer.flush()?;
+        drop(writer);
+        std::fs::rename(temporary_path, &self.path)?;
+        Ok(())
+    }
+}
+
+fn read_blackwell_snapshot(path: &Path) -> std::io::Result<BlackwellReplaySnapshot> {
+    let mut reader = File::open(path)?;
+    let mut magic = [0u8; 16];
+    reader.read_exact(&mut magic)?;
+    if &magic != BLACKWELL_SNAPSHOT_MAGIC {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Blackwell snapshot magic does not match.",
+        ));
+    }
+
+    let version = read_u32(&mut reader)?;
+    if version != BLACKWELL_SNAPSHOT_VERSION {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Unsupported Blackwell snapshot version {version}."),
+        ));
+    }
+
+    let data_length = read_u32(&mut reader)? as usize;
+    let tank_count = read_u32(&mut reader)? as usize;
+    let step_count = read_u32(&mut reader)? as usize;
+    let config_stride = read_u32(&mut reader)? as usize;
+    let dynamic_stride = read_u32(&mut reader)? as usize;
+    if data_length == 0 || tank_count == 0 || step_count == 0 ||
+        config_stride != BLACKWELL_CONFIG_STRIDE || dynamic_stride != BLACKWELL_DYNAMIC_STRIDE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Blackwell snapshot dimensions are invalid.",
+        ));
+    }
+
+    let export_power = read_f64_vec(&mut reader, data_length)?;
+    let demand_energy = read_f64_vec(&mut reader, data_length)?;
+    let packed_config = read_f64_vec(&mut reader, tank_count * config_stride)?;
+    let mut steps = Vec::with_capacity(step_count);
+    for _ in 0..step_count {
+        let current_index = read_u32(&mut reader)?;
+        let horizon_steps = read_u32(&mut reader)?;
+        let dynamic = read_f64_vec(&mut reader, tank_count * dynamic_stride)?;
+        steps.push(BlackwellReplayStep { current_index, horizon_steps, dynamic });
+    }
+
+    Ok(BlackwellReplaySnapshot {
+        data_length,
+        tank_count,
+        export_power,
+        demand_energy,
+        packed_config,
+        steps,
+    })
+}
+
+fn blackwell_fnv1a_update(hash: &mut u64, value: f64) {
+    for byte in value.to_bits().to_le_bytes() {
+        *hash ^= byte as u64;
+        *hash = hash.wrapping_mul(1099511628211);
+    }
+}
+
+
+#[napi(object)]
+pub struct CudaContextStatus {
+    pub device_id: i32,
+    pub stream_ready: bool,
+}
+
+#[napi(object)]
+pub struct CudaBufferStatus {
+    pub device_id: i32,
+    pub input_bytes: u32,
+    pub workspace_bytes: u32,
+    pub result_bytes: u32,
+}
+
+#[napi(object)]
+pub struct CudaCausalJob {
+    pub current_index: u32,
+    pub horizon_steps: u32,
+
+    pub current_storage_energy: f64,
+    pub minimum_reserve_energy: f64,
+    pub target_storage_energy: f64,
+    pub maximum_heat_pump_electrical_power: f64,
+    pub cop: f64,
+
+    /*
+     * Optional for backwards compatibility with existing direct CUDA
+     * tests. When absent, the native kernel keeps using energyCutLevel.
+     */
+    pub requested_electrical_energy: Option<f64>,
+
+    pub energy_cut_level: f64,
+    pub time_step_hours: f64,
+    pub storage_energy_per_kelvin: f64,
+    pub storage_conductance_w_per_kelvin: f64,
+    pub storage_min_temperature: f64,
+    pub ambient_temperature: f64,
+    pub daily_heat_loss: f64,
+}
+
+#[napi(object)]
+pub struct CudaNoSunshineTankJob {
+    pub horizon_steps: u32,
+    pub protected_steps: u32,
+
+    pub time_step_hours: f64,
+
+    pub maximum_heat_pump_electrical_power: f64,
+    pub cop: f64,
+
+    pub initial_waterline_power: f64,
+
+    pub target_storage_energy: f64,
+
+    pub storage_energy_per_kelvin: f64,
+    pub storage_conductance_w_per_kelvin: f64,
+    pub storage_min_temperature: f64,
+    pub ambient_temperature: f64,
+    pub daily_heat_loss: f64,
+}
+
+
+#[napi(object)]
+pub struct CudaCausalResult {
+    pub cut_level_power: f64,
+    pub normal_plan_survives: bool,
+    pub maximum_pv_plan_survives: bool,
+    pub survival_checks: u32,
+    pub binary_search_iterations: u32,
+}
+
+#[napi(object)]
+pub struct CudaCausalProfile {
+    pub causal_calls: u32,
+    pub causal_jobs: u32,
+
+    pub parameter_h2d_ms: f64,
+    pub kernel_ms: f64,
+    pub result_d2h_ms: f64,
+    pub gpu_total_ms: f64,
+    pub host_wait_ms: f64,
+    pub wall_ms: f64,
+
+    pub average_kernel_us_per_job: f64,
+    pub average_gpu_us_per_job: f64,
+}
+
+
+#[napi(object)]
+pub struct BlackwellReplayResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub data_length: u32,
+    pub tank_count: u32,
+    pub step_count: u32,
+    pub repetitions: u32,
+    pub wall_ms: Vec<f64>,
+    pub kernel_ms: Vec<f64>,
+    pub gpu_total_ms: Vec<f64>,
+    pub host_wait_ms: Vec<f64>,
+    pub native_profile_wall_ms: Vec<f64>,
+    pub median_wall_ms: f64,
+    pub min_wall_ms: f64,
+    pub max_wall_ms: f64,
+    pub checksum_hex: String,
+}
+
+
+// SUNOPT_BLACKWELL_ANNUAL_GRAPH_REPLAY_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellGraphReplayResult {
+    pub snapshot_path:
+        String,
+
+    pub device_id:
+        i32,
+
+    pub data_length:
+        u32,
+
+    pub tank_count:
+        u32,
+
+    pub step_count:
+        u32,
+
+    pub causal_jobs:
+        u32,
+
+    pub repetitions:
+        u32,
+
+    pub graph_build_ms:
+        f64,
+
+    pub result_d2h_ms:
+        f64,
+
+    pub wall_ms:
+        Vec<f64>,
+
+    pub gpu_ms:
+        Vec<f64>,
+
+    pub median_wall_ms:
+        f64,
+
+    pub median_gpu_ms:
+        f64,
+
+    pub min_wall_ms:
+        f64,
+
+    pub max_wall_ms:
+        f64,
+
+    pub checksum_hex:
+        String,
+}
+// SUNOPT_BLACKWELL_ANNUAL_GRAPH_REPLAY_RESULT_END
+
+
+// SUNOPT_BLACKWELL_PIECEWISE_AFFINE_B3_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellPiecewiseAffineB3Result {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub annual_step_count: u32,
+    pub sample_step_count: u32,
+    pub sample_job_count: u32,
+    pub supported_jobs: u32,
+    pub unsupported_jobs: u32,
+    pub correction_search_jobs: u32,
+    pub reference_full_causal_gpu_ms: f64,
+
+    pub iteration_limits: Vec<u32>,
+    pub upload_ms: Vec<f64>,
+    pub kernel_ms: Vec<f64>,
+    pub download_ms: Vec<f64>,
+    pub wall_ms: Vec<f64>,
+    pub annual_projected_kernel_ms: Vec<f64>,
+
+    pub status_mismatches: Vec<u32>,
+    pub max_abs_cut_error: Vec<f64>,
+    pub mean_abs_cut_error: Vec<f64>,
+    pub cut_error_over_1e6: Vec<u32>,
+    pub cut_error_over_1e5: Vec<u32>,
+    pub cut_error_over_1e4: Vec<u32>,
+
+    pub average_correction_iterations: Vec<f64>,
+    pub average_evaluations_supported: Vec<f64>,
+    pub maximum_bracket_width: Vec<f64>,
+}
+// SUNOPT_BLACKWELL_PIECEWISE_AFFINE_B3_RESULT_END
+
+
+
+// SUNOPT_BLACKWELL_B14_EXACT_ENVELOPE_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellB14ExactEnvelopeResult {
+    pub snapshot_path: String,
+    pub sample_step_count: u32,
+    pub sample_job_count: u32,
+    pub supported_jobs: u32,
+    pub unsupported_jobs: u32,
+    pub correction_search_jobs: u32,
+    pub elapsed_ms: f64,
+    pub scalar_reference_ms: f64,
+    pub envelope_ms: f64,
+    pub status_mismatches: u32,
+    pub cut_mismatches_1e12: u32,
+    pub cut_mismatches_1e9: u32,
+    pub cut_mismatches_1e6: u32,
+    pub max_abs_cut_error: f64,
+    pub mean_abs_cut_error: f64,
+    pub max_production_quantization_gap: f64,
+    pub mean_production_quantization_gap: f64,
+    pub min_segments: u32,
+    pub median_segments: f64,
+    pub p95_segments: u32,
+    pub max_segments: u32,
+    pub mean_segments: f64,
+    pub min_hp_breakpoints: u32,
+    pub median_hp_breakpoints: f64,
+    pub p95_hp_breakpoints: u32,
+    pub max_hp_breakpoints: u32,
+    pub mean_hp_breakpoints: f64,
+    pub capacity_intersections: u32,
+    pub feasibility_bound_updates: u32,
+    pub max_capacity_intersections_per_job: u32,
+    pub max_feasibility_bound_updates_per_job: u32,
+}
+// SUNOPT_BLACKWELL_B14_EXACT_ENVELOPE_RESULT_END
+
+
+// SUNOPT_BLACKWELL_B14C_WARP32_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellB14cWarp32Result {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub annual_step_count: u32,
+    pub sample_step_count: u32,
+    pub sample_job_count: u32,
+    pub supported_jobs: u32,
+    pub unsupported_jobs: u32,
+    pub overflow_32_jobs: u32,
+    pub scratch_overflow_jobs: u32,
+    pub reference_scalar_ms: f64,
+    pub input_h2d_ms: f64,
+    pub kernel_total_ms: f64,
+    pub kernel_ms: f64,
+    pub result_d2h_ms: f64,
+    pub wall_ms: f64,
+    pub annual_projected_kernel_ms: f64,
+    pub status_mismatches: u32,
+    pub cut_mismatches_1e12: u32,
+    pub cut_mismatches_1e9: u32,
+    pub cut_mismatches_1e6: u32,
+    pub max_abs_cut_error: f64,
+    pub mean_abs_cut_error: f64,
+    pub max_segments_gpu: u32,
+    pub max_work_segments_gpu: u32,
+    pub checksum_hex: String,
+}
+// SUNOPT_BLACKWELL_B14C_WARP32_RESULT_END
+
+
+// SUNOPT_BLACKWELL_B14D_SORTED_MERGE_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellB14dWarp32MergeResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub annual_step_count: u32,
+    pub sample_step_count: u32,
+    pub sample_job_count: u32,
+    pub supported_jobs: u32,
+    pub unsupported_jobs: u32,
+    pub overflow_32_jobs: u32,
+    pub scratch_overflow_jobs: u32,
+    pub reference_scalar_ms: f64,
+    pub input_h2d_ms: f64,
+    pub kernel_total_ms: f64,
+    pub kernel_ms: f64,
+    pub result_d2h_ms: f64,
+    pub wall_ms: f64,
+    pub annual_projected_kernel_ms: f64,
+    pub status_mismatches: u32,
+    pub cut_mismatches_1e12: u32,
+    pub cut_mismatches_1e9: u32,
+    pub cut_mismatches_1e6: u32,
+    pub max_abs_cut_error: f64,
+    pub mean_abs_cut_error: f64,
+    pub max_segments_gpu: u32,
+    pub max_work_segments_gpu: u32,
+    pub checksum_hex: String,
+}
+// SUNOPT_BLACKWELL_B14D_SORTED_MERGE_RESULT_END
+
+// SUNOPT_BLACKWELL_B14E_WARP_PARALLEL_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellB14eWarpParallelResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub annual_step_count: u32,
+    pub sample_step_count: u32,
+    pub sample_job_count: u32,
+    pub supported_jobs: u32,
+    pub unsupported_jobs: u32,
+    pub overflow_32_jobs: u32,
+    pub scratch_overflow_jobs: u32,
+    pub reference_scalar_ms: f64,
+    pub input_h2d_ms: f64,
+    pub kernel_total_ms: f64,
+    pub kernel_ms: f64,
+    pub result_d2h_ms: f64,
+    pub wall_ms: f64,
+    pub annual_projected_kernel_ms: f64,
+    pub status_mismatches: u32,
+    pub cut_mismatches_1e12: u32,
+    pub cut_mismatches_1e9: u32,
+    pub cut_mismatches_1e6: u32,
+    pub max_abs_cut_error: f64,
+    pub mean_abs_cut_error: f64,
+    pub max_segments_gpu: u32,
+    pub max_work_segments_gpu: u32,
+    pub checksum_hex: String,
+}
+// SUNOPT_BLACKWELL_B14E_WARP_PARALLEL_RESULT_END
+
+// SUNOPT_BLACKWELL_B14F_WARP_PRECHECK_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellB14fWarpPrecheckResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub annual_step_count: u32,
+    pub sample_step_count: u32,
+    pub sample_job_count: u32,
+    pub supported_jobs: u32,
+    pub unsupported_jobs: u32,
+    pub overflow_32_jobs: u32,
+    pub scratch_overflow_jobs: u32,
+    pub reference_scalar_ms: f64,
+    pub input_h2d_ms: f64,
+    pub kernel_total_ms: f64,
+    pub kernel_ms: f64,
+    pub result_d2h_ms: f64,
+    pub wall_ms: f64,
+    pub annual_projected_kernel_ms: f64,
+    pub status_mismatches: u32,
+    pub cut_mismatches_1e12: u32,
+    pub cut_mismatches_1e9: u32,
+    pub cut_mismatches_1e6: u32,
+    pub max_abs_cut_error: f64,
+    pub mean_abs_cut_error: f64,
+    pub max_segments_gpu: u32,
+    pub max_work_segments_gpu: u32,
+    pub checksum_hex: String,
+}
+// SUNOPT_BLACKWELL_B14F_WARP_PRECHECK_RESULT_END
+
+// SUNOPT_BLACKWELL_MAX_AFFINE_TREE_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellMaxAffineCudaTreeResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+
+    pub sample_step_count: u32,
+    pub sample_job_count: u32,
+    pub survival_check_count: u32,
+
+    pub supported_jobs: u32,
+    pub unsupported_jobs: u32,
+
+    pub normal_survives_jobs: u32,
+    pub normal_fails_jobs: u32,
+    pub maxpv_fails_jobs: u32,
+    pub correction_search_jobs: u32,
+
+    pub projected_survival_check_count: u32,
+    pub projected_tree_kernel_ms: f64,
+
+    pub reference_full_causal_gpu_ms: f64,
+
+    pub candidate_h2d_ms: f64,
+    pub candidate_kernel_total_ms: f64,
+    pub candidate_kernel_ms: f64,
+    pub candidate_d2h_ms: f64,
+    pub candidate_wall_ms: f64,
+
+    pub candidate_ns_per_survival_check: f64,
+
+    pub normal_survival_mismatches: u32,
+    pub maxpv_survival_mismatches: u32,
+    pub unexpected_gpu_unsupported_checks: u32,
+}
+// SUNOPT_BLACKWELL_MAX_AFFINE_TREE_RESULT_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_HP_BREAKPOINTS_RESULT_BEGIN
+#[derive(Clone, Copy, Default)]
+struct DigitalResearchResult {
+    cut_level_power: f64,
+    normal_plan_survives: bool,
+    maximum_pv_plan_survives: bool,
+}
+
+fn digital_hp_charge(
+    export_power: f64,
+    cut_level_power: f64,
+    tank: ResearchTankParameters,
+) -> f64 {
+    if tank.maximum_heat_pump_electrical_power > 0.0 &&
+        export_power - cut_level_power >=
+            tank.maximum_heat_pump_electrical_power
+    {
+        tank.maximum_heat_pump_electrical_power *
+        tank.cop *
+        tank.time_step_hours
+    } else {
+        0.0
+    }
+}
+
+fn digital_survives_scalar(
+    export_window: &[f64],
+    demand_window: &[f64],
+    cut_level_power: f64,
+    current_storage_energy: f64,
+    minimum_reserve_energy: f64,
+    tank: ResearchTankParameters,
+) -> bool {
+    const EPSILON: f64 = 1.0e-6;
+
+    let reserve =
+        minimum_reserve_energy
+            .max(0.0)
+            .min(tank.target_storage_energy);
+
+    let mut stored =
+        current_storage_energy
+            .max(0.0)
+            .min(tank.target_storage_energy);
+
+    for offset in 0..export_window.len() {
+        let charge =
+            digital_hp_charge(
+                export_window[offset],
+                cut_level_power,
+                tank,
+            );
+
+        if offset == 0 {
+            stored =
+                (stored + charge)
+                    .min(tank.target_storage_energy);
+            continue;
+        }
+
+        let requested_loss =
+            (
+                (1.0 - tank.heat_loss_retention) *
+                stored +
+                tank.heat_loss_intercept
+            )
+            .max(0.0);
+
+        let heat_loss =
+            requested_loss.min(stored);
+
+        let after_loss =
+            (stored - heat_loss).max(0.0);
+
+        let demand =
+            demand_window[offset].max(0.0);
+
+        let discharged =
+            demand.min(after_loss);
+
+        let before_charge =
+            after_loss -
+            discharged;
+
+        let unmet =
+            (demand - discharged).max(0.0);
+
+        if unmet > EPSILON {
+            return false;
+        }
+
+        if reserve - before_charge > EPSILON {
+            return false;
+        }
+
+        stored =
+            (before_charge + charge)
+                .min(tank.target_storage_energy);
+    }
+
+    true
+}
+
+fn digital_normal_cut(
+    export_window: &[f64],
+    requested_electrical_energy: f64,
+    tank: ResearchTankParameters,
+) -> f64 {
+    let pmax =
+        tank.maximum_heat_pump_electrical_power;
+
+    if pmax <= 0.0 ||
+        tank.time_step_hours <= 0.0
+    {
+        return 0.0;
+    }
+
+    let mut breakpoints =
+        export_window
+            .iter()
+            .copied()
+            .filter(|&export| export >= pmax)
+            .map(|export| export - pmax)
+            .collect::<Vec<_>>();
+
+    breakpoints.sort_by(
+        |a, b| {
+            a.partial_cmp(b)
+                .unwrap_or(
+                    std::cmp::Ordering::Equal,
+                )
+        },
+    );
+
+    let count =
+        breakpoints.len();
+
+    if count == 0 {
+        return pmax;
+    }
+
+    let per_bucket =
+        pmax *
+        tank.time_step_hours;
+
+    let maximum_schedulable =
+        count as f64 *
+        per_bucket;
+
+    let target =
+        requested_electrical_energy
+            .max(0.0)
+            .min(maximum_schedulable);
+
+    if target <= 0.0 {
+        return breakpoints[count - 1] + pmax;
+    }
+
+    if target >= maximum_schedulable - 1.0e-12 {
+        return 0.0;
+    }
+
+    let required_on =
+        ((target / per_bucket - 1.0e-12).ceil() as usize)
+            .max(1)
+            .min(count);
+
+    breakpoints[
+        count -
+        required_on
+    ]
+}
+
+fn digital_run_scalar(
+    export_window: &[f64],
+    demand_window: &[f64],
+    current_storage_energy: f64,
+    minimum_reserve_energy: f64,
+    requested_electrical_energy: f64,
+    tank: ResearchTankParameters,
+) -> DigitalResearchResult {
+    let normal_cut =
+        digital_normal_cut(
+            export_window,
+            requested_electrical_energy,
+            tank,
+        );
+
+    if digital_survives_scalar(
+        export_window,
+        demand_window,
+        normal_cut,
+        current_storage_energy,
+        minimum_reserve_energy,
+        tank,
+    ) {
+        return DigitalResearchResult {
+            cut_level_power:
+                normal_cut,
+            normal_plan_survives:
+                true,
+            maximum_pv_plan_survives:
+                true,
+        };
+    }
+
+    if !digital_survives_scalar(
+        export_window,
+        demand_window,
+        0.0,
+        current_storage_energy,
+        minimum_reserve_energy,
+        tank,
+    ) {
+        return DigitalResearchResult {
+            cut_level_power:
+                0.0,
+            normal_plan_survives:
+                false,
+            maximum_pv_plan_survives:
+                false,
+        };
+    }
+
+    let pmax =
+        tank.maximum_heat_pump_electrical_power;
+
+    let mut candidates =
+        export_window
+            .iter()
+            .copied()
+            .filter(|&export| export >= pmax)
+            .map(|export| export - pmax)
+            .collect::<Vec<_>>();
+
+    candidates.sort_by(
+        |a, b| {
+            a.partial_cmp(b)
+                .unwrap_or(
+                    std::cmp::Ordering::Equal,
+                )
+        },
+    );
+
+    let mut left =
+        0usize;
+
+    let mut right =
+        candidates.len();
+
+    let mut best =
+        0.0_f64;
+
+    while left < right {
+        let middle =
+            left +
+            (right - left) /
+            2;
+
+        let cut =
+            candidates[middle].max(0.0);
+
+        if digital_survives_scalar(
+            export_window,
+            demand_window,
+            cut,
+            current_storage_energy,
+            minimum_reserve_energy,
+            tank,
+        ) {
+            best =
+                cut;
+            left =
+                middle +
+                1;
+        } else {
+            right =
+                middle;
+        }
+    }
+
+    DigitalResearchResult {
+        cut_level_power:
+            best,
+        normal_plan_survives:
+            false,
+        maximum_pv_plan_survives:
+            true,
+    }
+}
+
+#[napi(object)]
+pub struct BlackwellDigitalHpBreakpointVariant {
+    pub search_iterations: u32,
+    pub kernel_ms: f64,
+    pub wall_ms: f64,
+    pub annual_projected_kernel_ms: f64,
+
+    pub supported_jobs: u32,
+    pub unsupported_jobs: u32,
+
+    pub status_mismatches: u32,
+    pub cut_mismatches: u32,
+    pub maximum_cut_error: f64,
+
+    pub average_survival_evaluations: f64,
+    pub maximum_survival_evaluations: u32,
+}
+
+#[napi(object)]
+pub struct BlackwellDigitalHpBreakpointResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub annual_step_count: u32,
+    pub sample_step_count: u32,
+    pub sample_job_count: u32,
+    pub supported_jobs: u32,
+    pub unsupported_jobs: u32,
+    pub scalar_reference_ms: f64,
+    pub variants: Vec<BlackwellDigitalHpBreakpointVariant>,
+}
+// SUNOPT_BLACKWELL_DIGITAL_HP_BREAKPOINTS_RESULT_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_LOCKSTEP_CANDIDATE_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellDigitalLockstepCandidateResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub search_iterations: u32,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+    pub gpu_compressed_jobs: u32,
+    pub gpu_serial_fallback_jobs: u32,
+    pub unexpected_unsupported_jobs: u32,
+    pub static_h2d_ms: f64,
+    pub direct_gpu_total_ms: f64,
+    pub direct_host_wait_ms: f64,
+    pub direct_wall_ms: f64,
+    pub candidate_causal_ms: f64,
+    pub candidate_average_us_per_job: f64,
+    pub parity_sample_steps: u32,
+    pub parity_status_mismatches: u32,
+    pub parity_cut_mismatches: u32,
+    pub parity_max_cut_error: f64,
+    pub average_survival_evaluations: f64,
+    pub maximum_survival_evaluations: u32,
+    pub checksum_hex: String,
+}
+// SUNOPT_BLACKWELL_DIGITAL_LOCKSTEP_CANDIDATE_RESULT_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_GRAPH_AB_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellDigitalGraphAbResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub search_iterations: u32,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+    pub gpu_compressed_jobs: u32,
+    pub gpu_serial_fallback_jobs: u32,
+
+    pub direct_static_h2d_ms: f64,
+    pub direct_gpu_total_ms: f64,
+    pub direct_host_wait_ms: f64,
+    pub direct_wall_ms: f64,
+
+    pub graph_static_h2d_ms: f64,
+    pub graph_build_ms: f64,
+    pub graph_gpu_total_ms: f64,
+    pub graph_host_wait_ms: f64,
+    pub graph_wall_ms: f64,
+
+    pub wall_saving_ms: f64,
+    pub wall_speedup: f64,
+    pub wall_reduction_percent: f64,
+
+    pub direct_graph_status_mismatches: u32,
+    pub direct_graph_cut_mismatches: u32,
+    pub direct_graph_max_cut_error: f64,
+
+    pub parity_sample_steps: u32,
+    pub parity_status_mismatches: u32,
+    pub parity_cut_mismatches: u32,
+    pub parity_max_cut_error: f64,
+
+    pub checksum_hex: String,
+}
+// SUNOPT_BLACKWELL_DIGITAL_GRAPH_AB_RESULT_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_PRESORT_AB_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellDigitalPresortAbResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub search_iterations: u32,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+    pub presorted_values: u32,
+    pub presorted_mib: f64,
+    pub presort_cpu_ms: f64,
+    pub direct_gpu_total_ms: f64,
+    pub direct_wall_ms: f64,
+    pub presorted_window_h2d_ms: f64,
+    pub presorted_gpu_total_ms: f64,
+    pub presorted_wall_ms: f64,
+    pub wall_saving_ms: f64,
+    pub wall_speedup: f64,
+    pub wall_reduction_percent: f64,
+    pub status_mismatches: u32,
+    pub cut_mismatches: u32,
+    pub maximum_cut_error: f64,
+    pub checksum_hex: String,
+}
+// SUNOPT_BLACKWELL_DIGITAL_PRESORT_AB_RESULT_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_WARP_TREE_AB_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellDigitalWarpTreeAbResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub search_iterations: u32,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+    pub presorted_mib: f64,
+    pub presort_cpu_ms: f64,
+    pub block_tree_gpu_total_ms: f64,
+    pub block_tree_wall_ms: f64,
+    pub warp_tree_gpu_total_ms: f64,
+    pub warp_tree_wall_ms: f64,
+    pub wall_saving_ms: f64,
+    pub wall_speedup: f64,
+    pub wall_reduction_percent: f64,
+    pub block_warp_status_mismatches: u32,
+    pub block_warp_cut_mismatches: u32,
+    pub block_warp_max_cut_error: f64,
+    pub evaluation_mismatches: u32,
+    pub parity_sample_steps: u32,
+    pub parity_status_mismatches: u32,
+    pub parity_cut_mismatches: u32,
+    pub parity_max_cut_error: f64,
+    pub checksum_hex: String,
+}
+// SUNOPT_BLACKWELL_DIGITAL_WARP_TREE_AB_RESULT_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_PIECEWISE_ZERO_AB_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellDigitalPiecewiseZeroAbResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub search_iterations: u32,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+
+    pub legacy_compressed_jobs: u32,
+    pub legacy_serial_fallback_jobs: u32,
+    pub piecewise_compressed_jobs: u32,
+    pub piecewise_serial_fallback_jobs: u32,
+
+    pub legacy_gpu_total_ms: f64,
+    pub legacy_wall_ms: f64,
+
+    pub piecewise_gpu_total_ms: f64,
+    pub piecewise_wall_ms: f64,
+
+    pub wall_saving_ms: f64,
+    pub wall_speedup: f64,
+    pub wall_reduction_percent: f64,
+
+    pub legacy_piecewise_status_mismatches: u32,
+    pub legacy_piecewise_cut_mismatches: u32,
+    pub legacy_piecewise_max_cut_error: f64,
+    pub evaluation_mismatches: u32,
+
+    pub parity_sample_steps: u32,
+    pub parity_status_mismatches: u32,
+    pub parity_cut_mismatches: u32,
+    pub parity_max_cut_error: f64,
+
+    pub checksum_hex: String,
+}
+// SUNOPT_BLACKWELL_DIGITAL_PIECEWISE_ZERO_AB_RESULT_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_RESIDENT_CHUNK_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellDigitalResidentChunkVariant {
+    pub chunk_steps: u32,
+    pub launches_per_year: u32,
+    pub input_h2d_ms: f64,
+    pub kernel_ms: f64,
+    pub result_d2h_ms: f64,
+    pub wall_ms: f64,
+    pub speedup_vs_lockstep: f64,
+    pub reduction_vs_lockstep_percent: f64,
+    pub status_mismatches: u32,
+    pub cut_mismatches: u32,
+    pub maximum_cut_error: f64,
+    pub evaluation_mismatches: u32,
+    pub checksum_hex: String,
+}
+
+#[napi(object)]
+pub struct BlackwellDigitalResidentChunkResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub search_iterations: u32,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+    pub presorted_mib: f64,
+    pub lockstep_gpu_total_ms: f64,
+    pub lockstep_wall_ms: f64,
+    pub lockstep_checksum_hex: String,
+    pub variants: Vec<BlackwellDigitalResidentChunkVariant>,
+}
+// SUNOPT_BLACKWELL_DIGITAL_RESIDENT_CHUNK_RESULT_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_RESIDENT_JOB_BATCH_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellDigitalResidentJobBatchVariant {
+    pub jobs_per_launch: u32,
+    pub launches_per_year: u32,
+    pub input_h2d_ms: f64,
+    pub kernel_ms: f64,
+    pub result_d2h_ms: f64,
+    pub wall_ms: f64,
+    pub speedup_vs_chunk_28: f64,
+    pub speedup_vs_lockstep: f64,
+    pub reduction_vs_lockstep_percent: f64,
+    pub status_mismatches: u32,
+    pub cut_mismatches: u32,
+    pub maximum_cut_error: f64,
+    pub evaluation_mismatches: u32,
+    pub checksum_hex: String,
+}
+
+
+#[napi(object)]
+pub struct BlackwellDigitalResidentJobBatchResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub search_iterations: u32,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+    pub presorted_mib: f64,
+    pub lockstep_wall_ms: f64,
+    pub chunk_28_wall_ms: f64,
+    pub reference_checksum_hex: String,
+    pub variants: Vec<BlackwellDigitalResidentJobBatchVariant>,
+}
+// SUNOPT_BLACKWELL_DIGITAL_RESIDENT_JOB_BATCH_RESULT_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_MULTILANE_SEARCH_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellDigitalMultilaneVariant {
+    pub lane_count: u32,
+    pub threads_per_block: u32,
+    pub input_h2d_ms: f64,
+    pub kernel_ms: f64,
+    pub result_d2h_ms: f64,
+    pub wall_ms: f64,
+    pub speedup_vs_binary: f64,
+    pub reduction_vs_binary_percent: f64,
+    pub status_mismatches: u32,
+    pub cut_mismatches: u32,
+    pub maximum_cut_error: f64,
+    pub average_survival_evaluations: f64,
+    pub maximum_survival_evaluations: u32,
+    pub checksum_hex: String,
+}
+
+
+#[napi(object)]
+pub struct BlackwellDigitalMultilaneResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+    pub presorted_mib: f64,
+    pub binary_kernel_ms: f64,
+    pub binary_wall_ms: f64,
+    pub binary_checksum_hex: String,
+    pub variants: Vec<BlackwellDigitalMultilaneVariant>,
+}
+// SUNOPT_BLACKWELL_DIGITAL_MULTILANE_SEARCH_RESULT_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_CLUSTER4_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellDigitalCluster4Result {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub repetitions: u32,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+
+    pub binary_kernel_ms: f64,
+    pub binary_wall_ms: f64,
+
+    pub cluster_blocks_per_tank: u32,
+    pub cluster_threads_per_block: u32,
+    pub cluster_total_blocks_per_step: u32,
+
+    pub cluster_input_h2d_ms: f64,
+    pub cluster_kernel_ms: f64,
+    pub cluster_result_d2h_ms: f64,
+    pub cluster_wall_ms: f64,
+
+    pub speedup_vs_binary: f64,
+    pub reduction_vs_binary_percent: f64,
+
+    pub status_mismatches: u32,
+    pub cut_mismatches: u32,
+    pub maximum_cut_error: f64,
+    pub evaluation_mismatches: u32,
+
+    pub binary_checksum_hex: String,
+    pub cluster_checksum_hex: String,
+}
+// SUNOPT_BLACKWELL_DIGITAL_CLUSTER4_RESULT_END
+
+
+// SUNOPT_BLACKWELL_B14P_PRODUCTION_B_CONTEXT_BEGIN
+#[derive(Debug)]
+struct CudaB14PContext {
+    raw:
+        NonNull<
+            std::ffi::c_void
+        >,
+}
+
+unsafe impl Send
+    for CudaB14PContext
+{
+}
+
+impl CudaB14PContext {
+    fn new(
+        device_id: i32,
+        export_power: &[f64],
+        demand_energy: &[f64],
+    ) -> Result<Self> {
+        let export32 =
+            export_power
+                .iter()
+                .map(
+                    |value| {
+                        *value as f32
+                    },
+                )
+                .collect::<Vec<_>>();
+
+        let demand32 =
+            demand_energy
+                .iter()
+                .map(
+                    |value| {
+                        *value as f32
+                    },
+                )
+                .collect::<Vec<_>>();
+
+        let mut raw =
+            std::ptr::null_mut();
+
+        let code = unsafe {
+            sunopt_cuda_b14p_create(
+                device_id as c_int,
+                export32.as_ptr(),
+                demand32.as_ptr(),
+                export32.len(),
+                &mut raw,
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_b14p_create",
+                    code,
+                ),
+            );
+        }
+
+        let raw =
+            NonNull::new(raw)
+                .ok_or_else(|| {
+                    Error::from_reason(
+                        "sunopt_cuda_b14p_create returned success with a null context.",
+                    )
+                })?;
+
+        Ok(Self { raw })
+    }
+
+    fn configure_from_packed(
+        &mut self,
+        packed: &[f64],
+    ) -> Result<usize> {
+        const STRIDE: usize = 12;
+
+        if (
+            packed.is_empty() ||
+            packed.len() % STRIDE != 0
+        ) {
+            return Err(
+                Error::from_reason(
+                    "B14P packed configuration must be a non-zero multiple of 12.",
+                ),
+            );
+        }
+
+        let tank_count =
+            packed.len() /
+            STRIDE;
+
+        let mut tanks =
+            Vec::<f32>::with_capacity(
+                tank_count * 7,
+            );
+
+        for tank_index
+            in 0..tank_count
+        {
+            let tank =
+                research_tank_from_packed(
+                    packed,
+                    tank_index,
+                );
+
+            tanks.extend_from_slice(
+                &[
+                    tank
+                        .target_storage_energy
+                        as f32,
+
+                    tank
+                        .maximum_heat_pump_electrical_power
+                        as f32,
+
+                    (
+                        tank.cop *
+                        tank.time_step_hours
+                    ) as f32,
+
+                    tank
+                        .heat_loss_retention
+                        as f32,
+
+                    tank
+                        .heat_loss_intercept
+                        as f32,
+
+                    if tank.affine_supported {
+                        1.0
+                    } else {
+                        0.0
+                    },
+
+                    tank
+                        .time_step_hours
+                        as f32,
+                ],
+            );
+        }
+
+        let code = unsafe {
+            sunopt_cuda_b14p_configure(
+                self.raw.as_ptr(),
+                tanks.as_ptr(),
+                tank_count,
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_b14p_configure",
+                    code,
+                ),
+            );
+        }
+
+        Ok(tank_count)
+    }
+
+    fn run_step(
+        &mut self,
+        current_index: usize,
+        horizon_steps: usize,
+        dynamic: &[f32],
+        cuts: &mut [f32],
+        status: &mut [u32],
+    ) -> Result<()> {
+        let tank_count =
+            cuts.len();
+
+        if (
+            tank_count == 0 ||
+            status.len() != tank_count ||
+            dynamic.len() !=
+                tank_count * 3
+        ) {
+            return Err(
+                Error::from_reason(
+                    "B14P run_step buffer shape mismatch.",
+                ),
+            );
+        }
+
+        let code = unsafe {
+            sunopt_cuda_b14p_run_step(
+                self.raw.as_ptr(),
+                current_index,
+                horizon_steps,
+                dynamic.as_ptr(),
+                tank_count,
+                cuts.as_mut_ptr(),
+                status.as_mut_ptr(),
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_b14p_run_step",
+                    code,
+                ),
+            );
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop
+    for CudaB14PContext
+{
+    fn drop(&mut self) {
+        let _ = unsafe {
+            sunopt_cuda_b14p_destroy(
+                self.raw.as_ptr(),
+            )
+        };
+    }
+}
+
+#[napi(object)]
+pub struct BlackwellB14PProductionReplayResult {
+    pub snapshot_path: String,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+    pub wall_ms: f64,
+    pub checksum_hex: String,
+    pub status_mismatches_vs_strict: u32,
+    pub cut_mismatches_1e4_vs_strict: u32,
+    pub max_abs_cut_error_vs_strict: f64,
+    pub unsupported_jobs: u32,
+}
+
+#[napi]
+pub fn run_blackwell_b14p_production_replay(
+    snapshot_path: Option<String>,
+    strict_reference_path: String,
+    device_id: Option<i32>,
+) -> Result<BlackwellB14PProductionReplayResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(
+            &path
+        ).map_err(
+            |error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            },
+        )?;
+
+    if (
+        snapshot.steps.is_empty() ||
+        snapshot.tank_count == 0
+    ) {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty.",
+            ),
+        );
+    }
+
+    let mut context =
+        CudaB14PContext::new(
+            device_id.unwrap_or(0),
+            &snapshot.export_power,
+            &snapshot.demand_energy,
+        )?;
+
+    let tank_count =
+        context
+            .configure_from_packed(
+                &snapshot.packed_config,
+            )?;
+
+    if tank_count !=
+        snapshot.tank_count
+    {
+        return Err(
+            Error::from_reason(
+                "B14P tank-count mismatch.",
+            ),
+        );
+    }
+
+    let jobs =
+        snapshot
+            .steps
+            .len()
+            .checked_mul(
+                tank_count
+            )
+            .ok_or_else(|| {
+                Error::from_reason(
+                    "B14P job-count overflow.",
+                )
+            })?;
+
+    let reference_path =
+        PathBuf::from(
+            strict_reference_path
+        );
+
+    let reference =
+        std::fs::read(
+            &reference_path
+        ).map_err(
+            |error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read strict reference {}: {error}",
+                        reference_path.display(),
+                    ),
+                )
+            },
+        )?;
+
+    const HEADER: usize = 16;
+
+    if (
+        reference.len() < HEADER ||
+        &reference[0..8] !=
+            b"B14MREF1"
+    ) {
+        return Err(
+            Error::from_reason(
+                "Invalid B14M strict-reference header.",
+            ),
+        );
+    }
+
+    let mut count_bytes =
+        [0_u8; 8];
+
+    count_bytes
+        .copy_from_slice(
+            &reference[8..16],
+        );
+
+    let count =
+        u64::from_le_bytes(
+            count_bytes
+        ) as usize;
+
+    if count != jobs {
+        return Err(
+            Error::from_reason(
+                format!(
+                    "B14P strict-reference job count mismatch: expected {jobs}, got {count}.",
+                ),
+            ),
+        );
+    }
+
+    let expected_bytes =
+        HEADER +
+        jobs * 8 +
+        jobs * 4;
+
+    if reference.len() !=
+        expected_bytes
+    {
+        return Err(
+            Error::from_reason(
+                "B14P strict-reference byte size mismatch.",
+            ),
+        );
+    }
+
+    let cut_base =
+        HEADER;
+
+    let status_base =
+        HEADER +
+        jobs * 8;
+
+    let mut dynamic32 =
+        vec![
+            0.0_f32;
+            tank_count * 3
+        ];
+
+    let mut cuts =
+        vec![
+            0.0_f32;
+            tank_count
+        ];
+
+    let mut status =
+        vec![
+            0_u32;
+            tank_count
+        ];
+
+    let mut checksum =
+        1469598103934665603_u64;
+
+    let mut status_mismatches =
+        0_u32;
+
+    let mut cut_mismatches_1e4 =
+        0_u32;
+
+    let mut max_abs_cut_error =
+        0.0_f64;
+
+    let mut unsupported_jobs =
+        0_u32;
+
+    let wall_start =
+        Instant::now();
+
+    for (
+        step_index,
+        step
+    ) in snapshot
+        .steps
+        .iter()
+        .enumerate()
+    {
+        if step.dynamic.len() !=
+            tank_count * 3
+        {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "B14P snapshot dynamic shape mismatch at step {step_index}.",
+                    ),
+                ),
+            );
+        }
+
+        for (
+            target,
+            source
+        ) in dynamic32
+            .iter_mut()
+            .zip(
+                step.dynamic
+                    .iter()
+            )
+        {
+            *target =
+                *source as f32;
+        }
+
+        context.run_step(
+            step.current_index as usize,
+            step.horizon_steps as usize,
+            &dynamic32,
+            &mut cuts,
+            &mut status,
+        )?;
+
+        for tank in 0..tank_count {
+            let job =
+                step_index *
+                tank_count +
+                tank;
+
+            let value =
+                cuts[tank] as f64;
+
+            blackwell_fnv1a_update(
+                &mut checksum,
+                value,
+            );
+
+            let cut_offset =
+                cut_base +
+                job * 8;
+
+            let mut strict_cut_bytes =
+                [0_u8; 8];
+
+            strict_cut_bytes
+                .copy_from_slice(
+                    &reference[
+                        cut_offset
+                            ..
+                        cut_offset + 8
+                    ],
+                );
+
+            let strict_cut =
+                f64::from_le_bytes(
+                    strict_cut_bytes
+                );
+
+            let status_offset =
+                status_base +
+                job * 4;
+
+            let mut strict_status_bytes =
+                [0_u8; 4];
+
+            strict_status_bytes
+                .copy_from_slice(
+                    &reference[
+                        status_offset
+                            ..
+                        status_offset + 4
+                    ],
+                );
+
+            let strict_status =
+                u32::from_le_bytes(
+                    strict_status_bytes
+                );
+
+            if status[tank] == 3 {
+                unsupported_jobs += 1;
+            }
+
+            if status[tank] !=
+                strict_status
+            {
+                status_mismatches += 1;
+            }
+
+            let error =
+                (
+                    value -
+                    strict_cut
+                ).abs();
+
+            max_abs_cut_error =
+                max_abs_cut_error
+                    .max(error);
+
+            if error > 1.0e-4 {
+                cut_mismatches_1e4 += 1;
+            }
+        }
+    }
+
+    let wall_ms =
+        wall_start
+            .elapsed()
+            .as_secs_f64() *
+        1000.0;
+
+    Ok(
+        BlackwellB14PProductionReplayResult {
+            snapshot_path:
+                path
+                    .display()
+                    .to_string(),
+
+            annual_step_count:
+                snapshot
+                    .steps
+                    .len()
+                    as u32,
+
+            tank_count:
+                tank_count as u32,
+
+            causal_jobs:
+                jobs as u32,
+
+            wall_ms,
+
+            checksum_hex:
+                format!(
+                    "{checksum:016x}"
+                ),
+
+            status_mismatches_vs_strict:
+                status_mismatches,
+
+            cut_mismatches_1e4_vs_strict:
+                cut_mismatches_1e4,
+
+            max_abs_cut_error_vs_strict:
+                max_abs_cut_error,
+
+            unsupported_jobs,
+        },
+    )
+}
+// SUNOPT_BLACKWELL_B14P_PRODUCTION_B_CONTEXT_END
+
+#[napi]
+pub struct CudaCausalWorker {
+    context:
+        CudaSimulationContext,
+
+    data_length:
+        usize,
+
+    /*
+     * Production lockstep cache.
+     *
+     * The 12-value per-tank layout contains only three values that
+     * actually change each annual timestep:
+     *
+     *   currentStorageEnergy
+     *   minimumReserveEnergy
+     *   requestedElectricalEnergy
+     *
+     * Cache the complete native structs once and update only those
+     * dynamic fields plus the common currentIndex/horizonSteps.
+     */
+    lockstep_parameters:
+        Vec<SunoptCausalParameters>,
+
+    lockstep_dynamic:
+        Vec<SunoptCausalDynamic>,
+
+    blackwell_capture:
+        Option<BlackwellCapture>,
+
+    /*
+     * Production Approach B.
+     *
+     * B14P is enabled by default.  Set
+     * SUNOPT_CUDA_CAUSAL_PATH=A before creating the worker to force
+     * the legacy FP64 production path.
+     */
+    b14p_context:
+        Option<CudaB14PContext>,
+
+    b14p_dynamic:
+        Vec<f32>,
+
+    b14p_cuts:
+        Vec<f32>,
+
+    b14p_status:
+        Vec<u32>,
+
+    approach_a_step_graph:
+        usize,
+}
+
+impl CudaCausalWorker {
+
+    // SUNOPT_APPROACH_A_SINGLE_STEP_GRAPH_HELPERS_BEGIN
+    fn approach_a_step_graph_requested() -> bool {
+        std::env::var(
+            "SUNOPT_APPROACH_A_STEP_GRAPH",
+        )
+        .map(
+            |value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            },
+        )
+        .unwrap_or(false)
+    }
+
+    fn reset_approach_a_step_graph(
+        &mut self,
+    ) {
+        if self.approach_a_step_graph == 0 {
+            return;
+        }
+
+        let graph =
+            self.approach_a_step_graph
+                as *mut std::ffi::c_void;
+
+        let _ = unsafe {
+            sunopt_cuda_destroy_causal_step_graph(
+                graph,
+            )
+        };
+
+        self.approach_a_step_graph = 0;
+    }
+
+    fn ensure_approach_a_step_graph(
+        &mut self,
+    ) -> Result<()> {
+        if self.approach_a_step_graph != 0 {
+            return Ok(());
+        }
+
+        if self.lockstep_dynamic.is_empty() {
+            return Err(
+                Error::from_reason(
+                    "Approach-A step graph requires configured lockstep parameters.",
+                ),
+            );
+        }
+
+        let mut graph:
+            *mut std::ffi::c_void =
+            std::ptr::null_mut();
+
+        let code = unsafe {
+            sunopt_cuda_create_causal_step_graph(
+                self.context.raw.as_ptr(),
+                self.lockstep_dynamic.len(),
+                &mut graph,
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_create_causal_step_graph",
+                    code,
+                ),
+            );
+        }
+
+        if graph.is_null() {
+            return Err(
+                Error::from_reason(
+                    "sunopt_cuda_create_causal_step_graph returned null.",
+                ),
+            );
+        }
+
+        self.approach_a_step_graph =
+            graph as usize;
+
+        Ok(())
+    }
+
+    fn run_approach_a_direct_or_graph(
+        &mut self,
+        current_index: usize,
+        horizon_steps: usize,
+        output: &mut [f64],
+    ) -> Result<()> {
+        if !Self::approach_a_step_graph_requested() {
+            return self.context
+                .run_causal_dynamic_batch_into(
+                    current_index,
+                    horizon_steps,
+                    &self.lockstep_dynamic,
+                    output,
+                );
+        }
+
+        self.ensure_approach_a_step_graph()?;
+
+        let code = unsafe {
+            sunopt_cuda_run_causal_step_graph(
+                self.approach_a_step_graph
+                    as *mut std::ffi::c_void,
+                current_index,
+                horizon_steps,
+                self.lockstep_dynamic.as_ptr(),
+                self.lockstep_dynamic.len(),
+                output.as_mut_ptr(),
+            )
+        };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_run_causal_step_graph",
+                    code,
+                ),
+            );
+        }
+
+        Ok(())
+    }
+    // SUNOPT_APPROACH_A_SINGLE_STEP_GRAPH_HELPERS_END
+
+    fn run_lockstep_b14p_or_a(
+        &mut self,
+        current_index: usize,
+        horizon_steps: usize,
+        output: &mut [f64],
+    ) -> Result<()> {
+        let tank_count =
+            self.lockstep_dynamic.len();
+
+        if output.len() !=
+            tank_count
+        {
+            return Err(
+                Error::from_reason(
+                    "B14P output buffer length mismatch.",
+                ),
+            );
+        }
+
+        if self
+            .b14p_context
+            .is_some()
+        {
+            self.b14p_dynamic.resize(
+                tank_count * 3,
+                0.0,
+            );
+
+            self.b14p_cuts.resize(
+                tank_count,
+                0.0,
+            );
+
+            self.b14p_status.resize(
+                tank_count,
+                3,
+            );
+
+            for (
+                tank,
+                dynamic
+            ) in self
+                .lockstep_dynamic
+                .iter()
+                .enumerate()
+            {
+                let base =
+                    tank * 3;
+
+                self.b14p_dynamic[
+                    base + 0
+                ] =
+                    dynamic
+                        .current_storage_energy
+                        as f32;
+
+                self.b14p_dynamic[
+                    base + 1
+                ] =
+                    dynamic
+                        .minimum_reserve_energy
+                        as f32;
+
+                self.b14p_dynamic[
+                    base + 2
+                ] =
+                    dynamic
+                        .requested_electrical_energy
+                        as f32;
+            }
+
+            let result =
+                self
+                    .b14p_context
+                    .as_mut()
+                    .expect(
+                        "checked above",
+                    )
+                    .run_step(
+                        current_index,
+                        horizon_steps,
+                        &self.b14p_dynamic,
+                        &mut self.b14p_cuts,
+                        &mut self.b14p_status,
+                    );
+
+            match result {
+                Ok(()) => {
+                    let supported =
+                        self
+                            .b14p_status
+                            .iter()
+                            .all(
+                                |status| {
+                                    *status != 3
+                                },
+                            );
+
+                    if supported {
+                        for (
+                            target,
+                            source
+                        ) in output
+                            .iter_mut()
+                            .zip(
+                                self
+                                    .b14p_cuts
+                                    .iter()
+                            )
+                        {
+                            *target =
+                                *source as f64;
+                        }
+
+                        return Ok(());
+                    }
+                }
+
+                Err(error) => {
+                    eprintln!(
+                        "[SunOpt] B14P production path failed; using FP64 fallback for this worker: {error}",
+                    );
+
+                    self.b14p_context =
+                        None;
+                }
+            }
+        }
+
+        self
+            .run_approach_a_direct_or_graph(
+                current_index,
+                horizon_steps,
+                output,
+            )
+    }
+
+    fn validate_job(
+        &self,
+        job: &CudaCausalJob,
+    ) -> Result<()> {
+        if (
+            job.current_index as usize >=
+            self.data_length
+        ) {
+            return Err(
+                Error::from_reason(
+                    "currentIndex is outside annual arrays.",
+                ),
+            );
+        }
+
+        if job.horizon_steps == 0 {
+            return Err(
+                Error::from_reason(
+                    "horizonSteps must be greater than zero.",
+                ),
+            );
+        }
+
+        if (
+            job.horizon_steps as usize >
+            self.data_length
+        ) {
+            return Err(
+                Error::from_reason(
+                    "horizonSteps cannot exceed annual array length.",
+                ),
+            );
+        }
+
+        if job.time_step_hours <= 0.0 {
+            return Err(
+                Error::from_reason(
+                    "timeStepHours must be greater than zero.",
+                ),
+            );
+        }
+
+        if (
+            job.storage_energy_per_kelvin <=
+            0.0
+        ) {
+            return Err(
+                Error::from_reason(
+                    "storageEnergyPerKelvin must be greater than zero.",
+                ),
+            );
+        }
+
+        if (
+            job.maximum_heat_pump_electrical_power <
+            0.0
+        ) {
+            return Err(
+                Error::from_reason(
+                    "maximumHeatPumpElectricalPower cannot be negative.",
+                ),
+            );
+        }
+
+        if job.cop <= 0.0 {
+            return Err(
+                Error::from_reason(
+                    "COP must be greater than zero.",
+                ),
+            );
+        }
+
+        if job.target_storage_energy < 0.0 {
+            return Err(
+                Error::from_reason(
+                    "targetStorageEnergy cannot be negative.",
+                ),
+            );
+        }
+
+        Ok(())
+    }
+
+    fn validate_no_sunshine_tank(
+        &self,
+        job:
+            &CudaNoSunshineTankJob,
+    ) -> Result<()> {
+        if job.horizon_steps == 0 {
+            return Err(
+                Error::from_reason(
+                    "No-sunshine horizonSteps must be greater than zero.",
+                ),
+            );
+        }
+
+        if (
+            job.horizon_steps as usize >
+            self.data_length
+        ) {
+            return Err(
+                Error::from_reason(
+                    "No-sunshine horizonSteps cannot exceed annual array length.",
+                ),
+            );
+        }
+
+        if (
+            job.protected_steps >
+            job.horizon_steps
+        ) {
+            return Err(
+                Error::from_reason(
+                    "No-sunshine protectedSteps cannot exceed horizonSteps.",
+                ),
+            );
+        }
+
+        if job.time_step_hours <= 0.0 {
+            return Err(
+                Error::from_reason(
+                    "No-sunshine timeStepHours must be greater than zero.",
+                ),
+            );
+        }
+
+        if job.cop <= 0.0 {
+            return Err(
+                Error::from_reason(
+                    "No-sunshine COP must be greater than zero.",
+                ),
+            );
+        }
+
+        if (
+            job.maximum_heat_pump_electrical_power <
+            0.0
+        ) {
+            return Err(
+                Error::from_reason(
+                    "No-sunshine maximumHeatPumpElectricalPower cannot be negative.",
+                ),
+            );
+        }
+
+        if (
+            job.target_storage_energy <=
+            0.0
+        ) {
+            return Err(
+                Error::from_reason(
+                    "No-sunshine targetStorageEnergy must be greater than zero.",
+                ),
+            );
+        }
+
+        if (
+            job.storage_energy_per_kelvin <=
+            0.0
+        ) {
+            return Err(
+                Error::from_reason(
+                    "No-sunshine storageEnergyPerKelvin must be greater than zero.",
+                ),
+            );
+        }
+
+        Ok(())
+    }
+
+
+    fn native_no_sunshine_parameters(
+        job:
+            &CudaNoSunshineTankJob,
+    ) -> SunoptNoSunshineTankParameters {
+        SunoptNoSunshineTankParameters {
+            horizon_steps:
+                job.horizon_steps as usize,
+
+            protected_steps:
+                job.protected_steps as usize,
+
+            time_step_hours:
+                job.time_step_hours,
+
+            maximum_heat_pump_electrical_power:
+                job.maximum_heat_pump_electrical_power,
+
+            cop:
+                job.cop,
+
+            initial_waterline_power:
+                job.initial_waterline_power,
+
+            target_storage_energy:
+                job.target_storage_energy,
+
+            storage_energy_per_kelvin:
+                job.storage_energy_per_kelvin,
+
+            storage_conductance_w_per_kelvin:
+                job.storage_conductance_w_per_kelvin,
+
+            storage_min_temperature:
+                job.storage_min_temperature,
+
+            ambient_temperature:
+                job.ambient_temperature,
+
+            daily_heat_loss:
+                job.daily_heat_loss,
+        }
+    }
+
+
+    fn native_parameters(
+        &self,
+        job: &CudaCausalJob,
+    ) -> SunoptCausalParameters {
+        SunoptCausalParameters {
+            data_length:
+                self.data_length,
+
+            current_index:
+                job.current_index as usize,
+
+            horizon_steps:
+                job.horizon_steps as usize,
+
+            current_storage_energy:
+                job.current_storage_energy,
+
+            minimum_reserve_energy:
+                job.minimum_reserve_energy,
+
+            target_storage_energy:
+                job.target_storage_energy,
+
+            maximum_heat_pump_electrical_power:
+                job.maximum_heat_pump_electrical_power,
+
+            cop:
+                job.cop,
+
+            requested_electrical_energy:
+                job
+                    .requested_electrical_energy
+                    .unwrap_or(-1.0),
+
+            energy_cut_level:
+                job.energy_cut_level,
+
+            time_step_hours:
+                job.time_step_hours,
+
+            storage_energy_per_kelvin:
+                job.storage_energy_per_kelvin,
+
+            storage_conductance_w_per_kelvin:
+                job.storage_conductance_w_per_kelvin,
+
+            storage_min_temperature:
+                job.storage_min_temperature,
+
+            ambient_temperature:
+                job.ambient_temperature,
+
+            daily_heat_loss:
+                job.daily_heat_loss,
+        }
+    }
+
+    fn public_result(
+        native:
+            SunoptCausalResult,
+    ) -> CudaCausalResult {
+        CudaCausalResult {
+            cut_level_power:
+                native.cut_level_power,
+
+            normal_plan_survives:
+                native.normal_plan_survives != 0,
+
+            maximum_pv_plan_survives:
+                native.maximum_pv_plan_survives != 0,
+
+            survival_checks:
+                native.survival_checks,
+
+            binary_search_iterations:
+                native.binary_search_iterations,
+        }
+    }
+}
+
+// SUNOPT_APPROACH_A_SINGLE_STEP_GRAPH_DROP_BEGIN
+impl Drop for CudaCausalWorker {
+    fn drop(&mut self) {
+        self.reset_approach_a_step_graph();
+    }
+}
+// SUNOPT_APPROACH_A_SINGLE_STEP_GRAPH_DROP_END
+
+#[napi]
+impl CudaCausalWorker {
+    #[napi(constructor)]
+    pub fn new(
+        export_power:
+            Float64Array,
+
+        demand_energy:
+            Float64Array,
+
+        device_id:
+            Option<i32>,
+    ) -> Result<Self> {
+        if export_power.is_empty() {
+            return Err(
+                Error::from_reason(
+                    "exportPower must not be empty.",
+                ),
+            );
+        }
+
+        if (
+            export_power.len() !=
+            demand_energy.len()
+        ) {
+            return Err(
+                Error::from_reason(
+                    "exportPower and demandEnergy must have equal length.",
+                ),
+            );
+        }
+
+
+        if (
+            export_power
+                .iter()
+                .any(
+                    |value| {
+                        !value.is_finite()
+                    },
+                ) ||
+            demand_energy
+                .iter()
+                .any(
+                    |value| {
+                        !value.is_finite()
+                    },
+                )
+        ) {
+            return Err(
+                Error::from_reason(
+                    "exportPower and demandEnergy must contain only finite values.",
+                ),
+            );
+        }
+
+
+        let data_length =
+            export_power.len();
+
+
+        /*
+         * CUDA causal/no-sunshine code has historically applied:
+         *
+         *   if (value < 0.0) value = 0.0;
+         *
+         * every time an immutable annual export/demand value is read.
+         *
+         * Do that normalization once here instead. The constructor
+         * validates finite inputs above, so resident arrays are finite
+         * and nonnegative for the CUDA hot path.
+         */
+        let export_power_nonnegative:
+            Vec<f64> =
+            export_power
+                .iter()
+                .map(
+                    |value| {
+                        if *value < 0.0 {
+                            0.0
+                        } else {
+                            *value
+                        }
+                    },
+                )
+                .collect();
+
+
+        let demand_energy_nonnegative:
+            Vec<f64> =
+            demand_energy
+                .iter()
+                .map(
+                    |value| {
+                        if *value < 0.0 {
+                            0.0
+                        } else {
+                            *value
+                        }
+                    },
+                )
+                .collect();
+
+
+        let mut context =
+            CudaSimulationContext::new(
+                device_id.unwrap_or(0),
+            )?;
+
+        context
+            .upload_causal_arrays(
+                &export_power_nonnegative,
+                &demand_energy_nonnegative,
+            )?;
+
+        let snapshot_path =
+            blackwell_default_snapshot_path();
+
+        let blackwell_capture =
+            if blackwell_capture_requested(
+                &snapshot_path,
+            ) {
+                Some(
+                    BlackwellCapture::new(
+                        snapshot_path,
+                        &export_power_nonnegative,
+                        &demand_energy_nonnegative,
+                    ),
+                )
+            } else {
+                None
+            };
+
+        let use_b14p =
+            std::env::var(
+                "SUNOPT_CUDA_CAUSAL_PATH",
+            )
+            .map(
+                |value| {
+                    !value
+                        .trim()
+                        .eq_ignore_ascii_case(
+                            "A",
+                        )
+                },
+            )
+            .unwrap_or(true);
+
+        let b14p_context =
+            if use_b14p {
+                match CudaB14PContext::new(
+                    device_id.unwrap_or(0),
+                    &export_power_nonnegative,
+                    &demand_energy_nonnegative,
+                ) {
+                    Ok(context) =>
+                        Some(context),
+
+                    Err(error) => {
+                        eprintln!(
+                            "[SunOpt] B14P initialization failed; continuing with FP64 path: {error}",
+                        );
+
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+        Ok(Self {
+            context,
+            data_length,
+
+            lockstep_parameters:
+                Vec::new(),
+
+            lockstep_dynamic:
+                Vec::new(),
+
+            blackwell_capture,
+
+            b14p_context,
+
+            b14p_dynamic:
+                Vec::new(),
+
+            b14p_cuts:
+                Vec::new(),
+
+            b14p_status:
+                Vec::new(),
+
+            approach_a_step_graph:
+                0,
+        })
+    }
+
+    #[napi]
+    pub fn run(
+        &mut self,
+        job:
+            CudaCausalJob,
+    ) -> Result<
+        CudaCausalResult
+    > {
+        self.validate_job(&job)?;
+
+        let native =
+            self.context
+                .run_causal(
+                    self.native_parameters(
+                        &job,
+                    ),
+                )?;
+
+        Ok(
+            Self::public_result(
+                native,
+            ),
+        )
+    }
+
+    /// Parallel GPU batch:
+    /// one CUDA thread executes one complete causal job.
+    #[napi]
+    pub fn run_batch(
+        &mut self,
+        jobs:
+            Vec<CudaCausalJob>,
+    ) -> Result<
+        Vec<CudaCausalResult>
+    > {
+        if jobs.is_empty() {
+            return Ok(
+                Vec::new(),
+            );
+        }
+
+        for job in &jobs {
+            self.validate_job(job)?;
+        }
+
+        let parameters:
+            Vec<
+                SunoptCausalParameters
+            > =
+            jobs
+                .iter()
+                .map(
+                    |job| {
+                        self.native_parameters(
+                            job,
+                        )
+                    },
+                )
+                .collect();
+
+        let native_results =
+            self.context
+                .run_causal_batch(
+                    &parameters,
+                )?;
+
+        Ok(
+            native_results
+                .into_iter()
+                .map(
+                    Self::public_result,
+                )
+                .collect(),
+        )
+    }
+
+    /// Configure the production lockstep native-parameter cache.
+    ///
+    /// Input uses the existing stride-12 layout so the TypeScript
+    /// controller can configure this directly from its already
+    /// prepared constant array. The three dynamic fields are copied
+    /// too, but will be overwritten by run_lockstep_dynamic().
+    #[napi]
+    pub fn configure_lockstep_packed(
+        &mut self,
+        packed:
+            Float64Array,
+    ) -> Result<()> {
+        self.reset_approach_a_step_graph();
+
+        const STRIDE: usize =
+            12;
+
+        if (
+            packed.is_empty() ||
+            packed.len() %
+                STRIDE !=
+                0
+        ) {
+            return Err(
+                Error::from_reason(
+                    "Packed lockstep configuration length must be a non-zero multiple of 12.",
+                ),
+            );
+        }
+
+
+        if let Some(capture) = self.blackwell_capture.as_mut() {
+            let packed_capture: Vec<f64> =
+                packed.iter().copied().collect();
+            capture.configure(&packed_capture);
+        }
+
+
+        const CONFIG_CURRENT_INDEX:
+            usize =
+            0;
+
+        const CONFIG_HORIZON_STEPS:
+            usize =
+            1;
+
+
+        let tank_count =
+            packed.len() /
+            STRIDE;
+
+
+        self.lockstep_parameters
+            .clear();
+
+        self.lockstep_parameters
+            .reserve(
+                tank_count,
+            );
+
+
+        self.lockstep_dynamic
+            .clear();
+
+        self.lockstep_dynamic
+            .reserve(
+                tank_count,
+            );
+
+
+        for tank_index in 0..tank_count {
+            let base =
+                tank_index *
+                STRIDE;
+
+
+            let current_storage_energy =
+                packed[
+                    base +
+                    0
+                ];
+
+            let minimum_reserve_energy =
+                packed[
+                    base +
+                    1
+                ];
+
+            let target_storage_energy =
+                packed[
+                    base +
+                    2
+                ];
+
+            let maximum_heat_pump_electrical_power =
+                packed[
+                    base +
+                    3
+                ];
+
+            let cop =
+                packed[
+                    base +
+                    4
+                ];
+
+            let requested_electrical_energy =
+                packed[
+                    base +
+                    5
+                ];
+
+            let time_step_hours =
+                packed[
+                    base +
+                    6
+                ];
+
+            let storage_energy_per_kelvin =
+                packed[
+                    base +
+                    7
+                ];
+
+            let storage_conductance_w_per_kelvin =
+                packed[
+                    base +
+                    8
+                ];
+
+            let storage_min_temperature =
+                packed[
+                    base +
+                    9
+                ];
+
+            let ambient_temperature =
+                packed[
+                    base +
+                    10
+                ];
+
+            let daily_heat_loss =
+                packed[
+                    base +
+                    11
+                ];
+
+
+            if (
+                time_step_hours <=
+                    0.0 ||
+                storage_energy_per_kelvin <=
+                    0.0 ||
+                maximum_heat_pump_electrical_power <
+                    0.0 ||
+                cop <=
+                    0.0 ||
+                target_storage_energy <
+                    0.0
+            ) {
+                self.lockstep_parameters
+                    .clear();
+
+                return Err(
+                    Error::from_reason(
+                        format!(
+                            "Invalid packed lockstep configuration for tank index {tank_index}.",
+                        ),
+                    ),
+                );
+            }
+
+
+            self.lockstep_parameters
+                .push(
+                    SunoptCausalParameters {
+                        data_length:
+                            self.data_length,
+
+                        current_index:
+                            CONFIG_CURRENT_INDEX,
+
+                        horizon_steps:
+                            CONFIG_HORIZON_STEPS,
+
+                        current_storage_energy,
+
+                        minimum_reserve_energy,
+
+                        target_storage_energy,
+
+                        maximum_heat_pump_electrical_power,
+
+                        cop,
+
+                        requested_electrical_energy,
+
+                        energy_cut_level:
+                            0.0,
+
+                        time_step_hours,
+
+                        storage_energy_per_kelvin,
+
+                        storage_conductance_w_per_kelvin,
+
+                        storage_min_temperature,
+
+                        ambient_temperature,
+
+                        daily_heat_loss,
+                    },
+                );
+
+
+            self.lockstep_dynamic
+                .push(
+                    SunoptCausalDynamic {
+                        current_storage_energy,
+
+                        minimum_reserve_energy,
+
+                        requested_electrical_energy,
+                    },
+                );
+        }
+
+
+        self.context
+            .configure_causal_static_parameters(
+                &self.lockstep_parameters,
+            )?;
+
+        if let Some(
+            b14p
+        ) = self
+            .b14p_context
+            .as_mut()
+        {
+            let packed_for_b14p =
+                packed
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>();
+
+            match b14p
+                .configure_from_packed(
+                    &packed_for_b14p,
+                )
+            {
+                Ok(tank_count) => {
+                    self.b14p_dynamic =
+                        vec![
+                            0.0_f32;
+                            tank_count * 3
+                        ];
+
+                    self.b14p_cuts =
+                        vec![
+                            0.0_f32;
+                            tank_count
+                        ];
+
+                    self.b14p_status =
+                        vec![
+                            3_u32;
+                            tank_count
+                        ];
+                }
+
+                Err(error) => {
+                    eprintln!(
+                        "[SunOpt] B14P configuration failed; continuing with FP64 path: {error}",
+                    );
+
+                    self.b14p_context =
+                        None;
+                }
+            }
+        }
+
+
+        Ok(())
+    }
+
+
+    /// Production lockstep hot interface.
+    ///
+    /// Dynamic layout per tank, stride = 3:
+    ///
+    ///   0 currentStorageEnergy
+    ///   1 minimumReserveEnergy
+    ///   2 requestedElectricalEnergy
+    ///
+    /// All other native fields are reused from the one-time
+    /// configure_lockstep_packed() cache.
+    #[napi]
+    pub fn run_lockstep_dynamic(
+        &mut self,
+        current_index:
+            u32,
+
+        horizon_steps:
+            u32,
+
+        dynamic:
+            Float64Array,
+    ) -> Result<Vec<f64>> {
+        const DYNAMIC_STRIDE:
+            usize =
+            3;
+
+
+        if (
+            current_index as usize >=
+            self.data_length
+        ) {
+            return Err(
+                Error::from_reason(
+                    "currentIndex is outside annual arrays.",
+                ),
+            );
+        }
+
+
+        if (
+            horizon_steps ==
+                0 ||
+            horizon_steps as usize >
+                self.data_length
+        ) {
+            return Err(
+                Error::from_reason(
+                    "horizonSteps must be within annual array length.",
+                ),
+            );
+        }
+
+
+        if (
+            self.lockstep_parameters
+                .is_empty() ||
+            self.lockstep_dynamic
+                .len() !=
+                self.lockstep_parameters
+                    .len()
+        ) {
+            return Err(
+                Error::from_reason(
+                    "Lockstep parameters are not configured. Call configureLockstepPacked first.",
+                ),
+            );
+        }
+
+
+        let expected_dynamic_length =
+            self.lockstep_dynamic
+                .len() *
+            DYNAMIC_STRIDE;
+
+
+        if (
+            dynamic.len() !=
+            expected_dynamic_length
+        ) {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Dynamic lockstep array length must be {expected_dynamic_length}.",
+                    ),
+                ),
+            );
+        }
+
+
+        for (
+            tank_index,
+            native_dynamic
+        ) in self
+            .lockstep_dynamic
+            .iter_mut()
+            .enumerate()
+        {
+            let base =
+                tank_index *
+                DYNAMIC_STRIDE;
+
+
+            let requested_electrical_energy =
+                dynamic[
+                    base +
+                    2
+                ];
+
+
+            if (
+                requested_electrical_energy <
+                0.0
+            ) {
+                return Err(
+                    Error::from_reason(
+                        format!(
+                            "Invalid requestedElectricalEnergy for tank index {tank_index}.",
+                        ),
+                    ),
+                );
+            }
+
+
+            native_dynamic
+                .current_storage_energy =
+                    dynamic[
+                        base +
+                        0
+                    ];
+
+
+            native_dynamic
+                .minimum_reserve_energy =
+                    dynamic[
+                        base +
+                        1
+                    ];
+
+
+            native_dynamic
+                .requested_electrical_energy =
+                    requested_electrical_energy;
+        }
+
+
+        let mut output =
+            vec![
+                0.0_f64;
+                self
+                    .lockstep_dynamic
+                    .len()
+            ];
+
+        self
+            .run_lockstep_b14p_or_a(
+                current_index as usize,
+                horizon_steps as usize,
+                &mut output,
+            )?;
+
+        Ok(output)
+    }
+
+
+    /// Lowest-overhead production lockstep interface.
+    ///
+    /// Both TypedArrays are borrowed synchronously from JavaScript:
+    ///
+    ///   dynamic:
+    ///     3 doubles per tank
+    ///
+    ///   output:
+    ///     1 cutLevelPower double per tank
+    ///
+    /// No Rust Vec result allocation and no JS Array conversion are
+    /// performed. The caller owns and reuses the output Float64Array.
+    #[napi]
+    pub fn run_lockstep_dynamic_into(
+        &mut self,
+        current_index:
+            u32,
+
+        horizon_steps:
+            u32,
+
+        dynamic:
+            Float64ArraySlice<'_>,
+
+        mut output:
+            Float64ArraySlice<'_>,
+    ) -> Result<()> {
+        const DYNAMIC_STRIDE:
+            usize =
+            3;
+
+
+        if (
+            current_index as usize >=
+            self.data_length
+        ) {
+            return Err(
+                Error::from_reason(
+                    "currentIndex is outside annual arrays.",
+                ),
+            );
+        }
+
+
+        if (
+            horizon_steps ==
+                0 ||
+            horizon_steps as usize >
+                self.data_length
+        ) {
+            return Err(
+                Error::from_reason(
+                    "horizonSteps must be within annual array length.",
+                ),
+            );
+        }
+
+
+        if (
+            self.lockstep_parameters
+                .is_empty() ||
+            self.lockstep_dynamic
+                .len() !=
+                self.lockstep_parameters
+                    .len()
+        ) {
+            return Err(
+                Error::from_reason(
+                    "Lockstep parameters are not configured. Call configureLockstepPacked first.",
+                ),
+            );
+        }
+
+
+        let expected_dynamic_length =
+            self.lockstep_dynamic
+                .len() *
+            DYNAMIC_STRIDE;
+
+
+        if (
+            dynamic.len() !=
+            expected_dynamic_length
+        ) {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Dynamic lockstep array length must be {expected_dynamic_length}.",
+                    ),
+                ),
+            );
+        }
+
+
+        if (
+            output.len() !=
+            self.lockstep_dynamic
+                .len()
+        ) {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Output lockstep array length must be {}; received {}.",
+                        self.lockstep_dynamic.len(),
+                        output.len(),
+                    ),
+                ),
+            );
+        }
+
+
+        for (
+            tank_index,
+            native_dynamic
+        ) in self
+            .lockstep_dynamic
+            .iter_mut()
+            .enumerate()
+        {
+            let base =
+                tank_index *
+                DYNAMIC_STRIDE;
+
+
+            let requested_electrical_energy =
+                dynamic[
+                    base +
+                    2
+                ];
+
+
+            if (
+                requested_electrical_energy <
+                0.0
+            ) {
+                return Err(
+                    Error::from_reason(
+                        format!(
+                            "Invalid requestedElectricalEnergy for tank index {tank_index}.",
+                        ),
+                    ),
+                );
+            }
+
+
+            native_dynamic
+                .current_storage_energy =
+                    dynamic[
+                        base +
+                        0
+                    ];
+
+
+            native_dynamic
+                .minimum_reserve_energy =
+                    dynamic[
+                        base +
+                        1
+                    ];
+
+
+            native_dynamic
+                .requested_electrical_energy =
+                    requested_electrical_energy;
+        }
+
+
+        /*
+         * SAFETY:
+         *
+         * This N-API method is synchronous. JavaScript cannot execute
+         * or access the output TypedArray until this call returns.
+         * Therefore the native call has exclusive access to the
+         * backing bytes for the duration of this mutable borrow.
+         */
+        let output_slice =
+            unsafe {
+                output.as_mut()
+            };
+
+
+        self
+            .run_lockstep_b14p_or_a(
+                current_index as usize,
+                horizon_steps as usize,
+                output_slice,
+            )?;
+
+        let mut completed_capture = false;
+        if let Some(capture) = self.blackwell_capture.as_mut() {
+            let dynamic_capture: Vec<f64> =
+                dynamic.iter().copied().collect();
+            capture.push_step(
+                current_index,
+                horizon_steps,
+                &dynamic_capture,
+            );
+            completed_capture = capture.complete();
+            if completed_capture {
+                match capture.write_snapshot() {
+                    Ok(()) => println!(
+                        "[SunOpt] Blackwell benchmark snapshot written: {}",
+                        capture.path.display(),
+                    ),
+                    Err(error) => eprintln!(
+                        "[SunOpt] Blackwell benchmark snapshot write failed: {error}",
+                    ),
+                }
+            }
+        }
+        if completed_capture {
+            self.blackwell_capture = None;
+        }
+
+        Ok(())
+    }
+
+
+    /// Low-overhead lockstep batch interface.
+    ///
+    /// Packed layout per tank, stride = 12:
+    ///
+    /// 0 currentStorageEnergy
+    /// 1 minimumReserveEnergy
+    /// 2 targetStorageEnergy
+    /// 3 maximumHeatPumpElectricalPower
+    /// 4 cop
+    /// 5 requestedElectricalEnergy
+    /// 6 timeStepHours
+    /// 7 storageEnergyPerKelvin
+    /// 8 storageConductanceWPerKelvin
+    /// 9 storageMinTemperature
+    /// 10 ambientTemperature
+    /// 11 dailyHeatLoss
+    ///
+    /// currentIndex and horizonSteps are common to the whole batch.
+    /// Only cutLevelPower values are returned because that is the only
+    /// causal result consumed by the lockstep controller.
+    #[napi]
+    pub fn run_lockstep_packed(
+        &mut self,
+        current_index: u32,
+        horizon_steps: u32,
+        packed: Float64Array,
+    ) -> Result<Vec<f64>> {
+        const STRIDE: usize = 12;
+
+        if current_index as usize >= self.data_length {
+            return Err(
+                Error::from_reason(
+                    "currentIndex is outside annual arrays.",
+                ),
+            );
+        }
+
+        if (
+            horizon_steps == 0 ||
+            horizon_steps as usize > self.data_length
+        ) {
+            return Err(
+                Error::from_reason(
+                    "horizonSteps must be within annual array length.",
+                ),
+            );
+        }
+
+        if (
+            packed.is_empty() ||
+            packed.len() % STRIDE != 0
+        ) {
+            return Err(
+                Error::from_reason(
+                    "Packed lockstep array length must be a non-zero multiple of 12.",
+                ),
+            );
+        }
+
+        let tank_count =
+            packed.len() /
+            STRIDE;
+
+        let mut parameters:
+            Vec<SunoptCausalParameters> =
+            Vec::with_capacity(
+                tank_count,
+            );
+
+        for tank_index in 0..tank_count {
+            let base =
+                tank_index *
+                STRIDE;
+
+            let current_storage_energy =
+                packed[base + 0];
+
+            let minimum_reserve_energy =
+                packed[base + 1];
+
+            let target_storage_energy =
+                packed[base + 2];
+
+            let maximum_heat_pump_electrical_power =
+                packed[base + 3];
+
+            let cop =
+                packed[base + 4];
+
+            let requested_electrical_energy =
+                packed[base + 5];
+
+            let time_step_hours =
+                packed[base + 6];
+
+            let storage_energy_per_kelvin =
+                packed[base + 7];
+
+            let storage_conductance_w_per_kelvin =
+                packed[base + 8];
+
+            let storage_min_temperature =
+                packed[base + 9];
+
+            let ambient_temperature =
+                packed[base + 10];
+
+            let daily_heat_loss =
+                packed[base + 11];
+
+            if (
+                time_step_hours <= 0.0 ||
+                storage_energy_per_kelvin <= 0.0 ||
+                maximum_heat_pump_electrical_power < 0.0 ||
+                cop <= 0.0 ||
+                target_storage_energy < 0.0 ||
+                requested_electrical_energy < 0.0
+            ) {
+                return Err(
+                    Error::from_reason(
+                        format!(
+                            "Invalid packed lockstep parameters for tank index {tank_index}.",
+                        ),
+                    ),
+                );
+            }
+
+            parameters.push(
+                SunoptCausalParameters {
+                    data_length:
+                        self.data_length,
+
+                    current_index:
+                        current_index as usize,
+
+                    horizon_steps:
+                        horizon_steps as usize,
+
+                    current_storage_energy,
+                    minimum_reserve_energy,
+                    target_storage_energy,
+                    maximum_heat_pump_electrical_power,
+                    cop,
+                    requested_electrical_energy,
+
+                    /*
+                     * The fused energy search replaces this before the
+                     * causal survival checks.
+                     */
+                    energy_cut_level:
+                        0.0,
+
+                    time_step_hours,
+                    storage_energy_per_kelvin,
+                    storage_conductance_w_per_kelvin,
+                    storage_min_temperature,
+                    ambient_temperature,
+                    daily_heat_loss,
+                },
+            );
+        }
+
+        let native_results =
+            self.context
+                .run_causal_batch(
+                    &parameters,
+                )?;
+
+        Ok(
+            native_results
+                .into_iter()
+                .map(
+                    |result| {
+                        result
+                            .cut_level_power
+                    },
+                )
+                .collect(),
+        )
+    }
+
+
+    /// Precompute the complete annual no-sunshine current-waterline
+    /// matrix in one CUDA launch.
+    ///
+    /// Output layout is tank-major:
+    ///
+    ///   result[tankIndex * dataLength + currentIndex]
+    #[napi]
+    pub fn precompute_no_sunshine_waterlines(
+        &mut self,
+
+        tanks:
+            Vec<CudaNoSunshineTankJob>,
+    ) -> Result<Vec<f64>> {
+        if tanks.is_empty() {
+            return Ok(
+                Vec::new(),
+            );
+        }
+
+        for tank in &tanks {
+            self.validate_no_sunshine_tank(
+                tank,
+            )?;
+        }
+
+        let parameters:
+            Vec<
+                SunoptNoSunshineTankParameters
+            > =
+            tanks
+                .iter()
+                .map(
+                    Self::native_no_sunshine_parameters,
+                )
+                .collect();
+
+        self.context
+            .precompute_no_sunshine_waterlines(
+                &parameters,
+                self.data_length,
+            )
+    }
+
+
+    #[napi]
+    pub fn profile(
+        &self,
+    ) -> Result<CudaCausalProfile> {
+        let profile =
+            self.context
+                .causal_profile()?;
+
+        let job_count =
+            profile.causal_jobs
+                as f64;
+
+        let average_kernel_us_per_job =
+            if job_count > 0.0 {
+                profile.kernel_ms *
+                1000.0 /
+                job_count
+            } else {
+                0.0
+            };
+
+        let average_gpu_us_per_job =
+            if job_count > 0.0 {
+                profile.gpu_total_ms *
+                1000.0 /
+                job_count
+            } else {
+                0.0
+            };
+
+        Ok(
+            CudaCausalProfile {
+                causal_calls:
+                    profile.causal_calls
+                        .min(u32::MAX as u64)
+                        as u32,
+
+                causal_jobs:
+                    profile.causal_jobs
+                        .min(u32::MAX as u64)
+                        as u32,
+
+                parameter_h2d_ms:
+                    profile.parameter_h2d_ms,
+
+                kernel_ms:
+                    profile.kernel_ms,
+
+                result_d2h_ms:
+                    profile.result_d2h_ms,
+
+                gpu_total_ms:
+                    profile.gpu_total_ms,
+
+                host_wait_ms:
+                    profile.host_wait_ms,
+
+                wall_ms:
+                    profile.wall_ms,
+
+                average_kernel_us_per_job,
+
+                average_gpu_us_per_job,
+            },
+        )
+    }
+
+    #[napi]
+    pub fn reset_profile(
+        &mut self,
+    ) -> Result<()> {
+        self.context
+            .reset_causal_profile()
+    }
+
+    #[napi(getter)]
+    pub fn data_length(
+        &self,
+    ) -> u32 {
+        self.data_length
+            as u32
+    }
+
+    #[napi(getter)]
+    pub fn device_id(
+        &self,
+    ) -> Result<i32> {
+        self.context
+            .device_id()
+    }
+}
+
+
+fn blackwell_parameters_from_packed(
+    packed: &[f64],
+    data_length: usize,
+) -> Result<Vec<SunoptCausalParameters>> {
+    if packed.is_empty() || packed.len() % BLACKWELL_CONFIG_STRIDE != 0 {
+        return Err(Error::from_reason(
+            "Blackwell replay packed configuration is invalid.",
+        ));
+    }
+
+    let tank_count = packed.len() / BLACKWELL_CONFIG_STRIDE;
+    let mut parameters = Vec::with_capacity(tank_count);
+    for tank_index in 0..tank_count {
+        let base = tank_index * BLACKWELL_CONFIG_STRIDE;
+        parameters.push(SunoptCausalParameters {
+            data_length,
+            current_index: 0,
+            horizon_steps: 1,
+            current_storage_energy: packed[base + 0],
+            minimum_reserve_energy: packed[base + 1],
+            target_storage_energy: packed[base + 2],
+            maximum_heat_pump_electrical_power: packed[base + 3],
+            cop: packed[base + 4],
+            requested_electrical_energy: packed[base + 5],
+            energy_cut_level: 0.0,
+            time_step_hours: packed[base + 6],
+            storage_energy_per_kelvin: packed[base + 7],
+            storage_conductance_w_per_kelvin: packed[base + 8],
+            storage_min_temperature: packed[base + 9],
+            ambient_temperature: packed[base + 10],
+            daily_heat_loss: packed[base + 11],
+        });
+    }
+    Ok(parameters)
+}
+
+fn blackwell_dynamic_from_values(
+    values: &[f64],
+    tank_count: usize,
+    dynamic: &mut [SunoptCausalDynamic],
+) -> Result<()> {
+    if values.len() != tank_count * BLACKWELL_DYNAMIC_STRIDE || dynamic.len() != tank_count {
+        return Err(Error::from_reason(
+            "Blackwell replay dynamic dimensions are invalid.",
+        ));
+    }
+    for tank_index in 0..tank_count {
+        let base = tank_index * BLACKWELL_DYNAMIC_STRIDE;
+        dynamic[tank_index] = SunoptCausalDynamic {
+            current_storage_energy: values[base + 0],
+            minimum_reserve_energy: values[base + 1],
+            requested_electrical_energy: values[base + 2],
+        };
+    }
+    Ok(())
+}
+
+fn median_f64(values: &[f64]) -> f64 {
+    if values.is_empty() { return 0.0; }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a,b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let m = sorted.len()/2;
+    if sorted.len()%2==0 { (sorted[m-1]+sorted[m])/2.0 } else { sorted[m] }
+}
+
+// SUNOPT_BLACKWELL_ANNUAL_GRAPH_REPLAY_FN_BEGIN
+#[napi]
+pub fn run_blackwell_graph_replay(
+    snapshot_path:
+        Option<String>,
+
+    repetitions:
+        Option<u32>,
+
+    device_id:
+        Option<i32>,
+) -> Result<BlackwellGraphReplayResult> {
+    let path =
+        snapshot_path
+            .map(
+                PathBuf::from,
+            )
+            .unwrap_or_else(
+                blackwell_default_snapshot_path,
+            );
+
+
+    let snapshot =
+        read_blackwell_snapshot(
+            &path,
+        )
+        .map_err(
+            |error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell benchmark snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            },
+        )?;
+
+
+    if (
+        snapshot.steps.len() !=
+        snapshot.data_length
+    ) {
+        return Err(
+            Error::from_reason(
+                format!(
+                    "Blackwell snapshot contains {} steps but annual data length is {}.",
+                    snapshot.steps.len(),
+                    snapshot.data_length,
+                ),
+            ),
+        );
+    }
+
+
+    let parameters =
+        blackwell_parameters_from_packed(
+            &snapshot.packed_config,
+            snapshot.data_length,
+        )?;
+
+
+    if (
+        parameters.len() !=
+        snapshot.tank_count
+    ) {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot tank count does not match packed configuration.",
+            ),
+        );
+    }
+
+
+    let selected_device =
+        device_id
+            .unwrap_or(0);
+
+
+    let mut context =
+        CudaSimulationContext::new(
+            selected_device,
+        )?;
+
+
+    context
+        .upload_causal_arrays(
+            &snapshot.export_power,
+            &snapshot.demand_energy,
+        )?;
+
+
+    context
+        .configure_causal_static_parameters(
+            &parameters,
+        )?;
+
+
+    let repetition_count =
+        repetitions
+            .unwrap_or(3)
+            .clamp(
+                1,
+                20,
+            );
+
+
+    let step_count =
+        snapshot.steps.len();
+
+    let tank_count =
+        snapshot.tank_count;
+
+
+    let total_jobs =
+        step_count
+            .checked_mul(
+                tank_count,
+            )
+            .ok_or_else(
+                || {
+                    Error::from_reason(
+                        "Blackwell graph replay job count overflow.",
+                    )
+                },
+            )?;
+
+
+    if (
+        total_jobs >
+        u32::MAX as usize
+    ) {
+        return Err(
+            Error::from_reason(
+                "Blackwell graph replay job count exceeds u32 result capacity.",
+            ),
+        );
+    }
+
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut horizon_steps =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut dynamic_flat =
+        Vec::<SunoptCausalDynamic>::with_capacity(
+            total_jobs,
+        );
+
+    let mut dynamic_step =
+        vec![
+            SunoptCausalDynamic::default();
+            tank_count
+        ];
+
+
+    for step in
+        &snapshot.steps
+    {
+        blackwell_dynamic_from_values(
+            &step.dynamic,
+            tank_count,
+            &mut dynamic_step,
+        )?;
+
+
+        current_indices.push(
+            step.current_index,
+        );
+
+        horizon_steps.push(
+            step.horizon_steps,
+        );
+
+        dynamic_flat.extend_from_slice(
+            &dynamic_step,
+        );
+    }
+
+
+    let mut results =
+        vec![
+            0.0_f64;
+            total_jobs
+        ];
+
+    let mut wall_ms =
+        vec![
+            0.0_f64;
+            repetition_count as usize
+        ];
+
+    let mut gpu_ms =
+        vec![
+            0.0_f64;
+            repetition_count as usize
+        ];
+
+    let mut graph_build_ms =
+        0.0_f64;
+
+    let mut result_d2h_ms =
+        0.0_f64;
+
+
+    let code =
+        unsafe {
+            sunopt_cuda_run_causal_graph_replay(
+                context.raw.as_ptr(),
+                current_indices.as_ptr(),
+                horizon_steps.as_ptr(),
+                dynamic_flat.as_ptr(),
+                step_count,
+                tank_count,
+                repetition_count,
+                results.as_mut_ptr(),
+                wall_ms.as_mut_ptr(),
+                gpu_ms.as_mut_ptr(),
+                &mut graph_build_ms,
+                &mut result_d2h_ms,
+            )
+        };
+
+
+    if (
+        code !=
+        0
+    ) {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_causal_graph_replay",
+                code,
+            ),
+        );
+    }
+
+
+    let mut checksum =
+        1469598103934665603u64;
+
+
+    for value in
+        &results
+    {
+        blackwell_fnv1a_update(
+            &mut checksum,
+            *value,
+        );
+    }
+
+
+    let median_wall_ms =
+        median_f64(
+            &wall_ms,
+        );
+
+    let median_gpu_ms =
+        median_f64(
+            &gpu_ms,
+        );
+
+    let min_wall_ms =
+        wall_ms
+            .iter()
+            .copied()
+            .fold(
+                f64::INFINITY,
+                f64::min,
+            );
+
+    let max_wall_ms =
+        wall_ms
+            .iter()
+            .copied()
+            .fold(
+                f64::NEG_INFINITY,
+                f64::max,
+            );
+
+
+    Ok(
+        BlackwellGraphReplayResult {
+            snapshot_path:
+                path.display()
+                    .to_string(),
+
+            device_id:
+                selected_device,
+
+            data_length:
+                snapshot.data_length
+                    as u32,
+
+            tank_count:
+                tank_count
+                    as u32,
+
+            step_count:
+                step_count
+                    as u32,
+
+            causal_jobs:
+                total_jobs
+                    as u32,
+
+            repetitions:
+                repetition_count,
+
+            graph_build_ms,
+
+            result_d2h_ms,
+
+            wall_ms,
+            gpu_ms,
+
+            median_wall_ms,
+            median_gpu_ms,
+            min_wall_ms,
+            max_wall_ms,
+
+            checksum_hex:
+                format!(
+                    "{checksum:016x}",
+                ),
+        },
+    )
+}
+// SUNOPT_BLACKWELL_ANNUAL_GRAPH_REPLAY_FN_END
+
+
+// SUNOPT_BLACKWELL_PHYSICS_COMPRESSION_RESEARCH_BEGIN
+/*
+ * ============================================================================
+ * BLACKWELL PHYSICS COMPRESSION RESEARCH
+ * ============================================================================
+ *
+ * Benchmark/research only. Production lockstep is untouched.
+ *
+ * Two ideas are tested against the exact recorded Blackwell snapshot:
+ *
+ * 1. Exact max-affine causal compression
+ *
+ *    For one future bucket, with the same affine heat-loss model used by the
+ *    CUDA causal kernel, the minimum energy required BEFORE that bucket can be
+ *    written as
+ *
+ *        R_i = max(A_i, a * R_{i+1} + B_i)
+ *
+ *    where R_{i+1} is the energy required after this bucket's forecast charge.
+ *    A function F(x)=max(c, a*x+b) is closed under composition, so an entire
+ *    48 h horizon can be represented by three max-affine coefficients plus
+ *    one feasibility bound. Composition is associative and can therefore be
+ *    tree-reduced on a GPU in O(log N)
+ *    dependency depth (8 levels for <=256 buckets) instead of walking ~192
+ *    storage states serially.
+ *
+ * 2. Truncated Fourier reconstruction
+ *
+ *    The 48 h export and demand windows are reconstructed from a configurable
+ *    number of real Fourier harmonics, then run through the same causal logic.
+ *    This is deliberately approximate and is evaluated for signal error,
+ *    Waterline error and survival-decision mismatches.
+ */
+
+#[derive(Clone, Copy)]
+struct ResearchTankParameters {
+    target_storage_energy: f64,
+    maximum_heat_pump_electrical_power: f64,
+    cop: f64,
+    time_step_hours: f64,
+    heat_loss_retention: f64,
+    heat_loss_intercept: f64,
+    affine_supported: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ResearchCausalResult {
+    cut_level_power: f64,
+    normal_plan_survives: bool,
+    maximum_pv_plan_survives: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ResearchMaxAffine {
+    /*
+     * F(x) = max(c, a*x+b), valid only for x <= max_input.
+     *
+     * The domain limit is required because every intermediate storage
+     * state is capped by targetStorageEnergy.  Without carrying this
+     * feasibility domain a later impossible requirement (> target)
+     * could be hidden by a large earlier forecast charge.
+     */
+    a: f64,
+    b: f64,
+    c: f64,
+    max_input: f64,
+}
+
+impl ResearchMaxAffine {
+    fn identity() -> Self {
+        Self {
+            a: 1.0,
+            b: 0.0,
+            c: f64::NEG_INFINITY,
+            max_input: f64::INFINITY,
+        }
+    }
+
+    fn eval(self, x: f64) -> Option<f64> {
+        if x > self.max_input + 1.0e-12 {
+            return None;
+        }
+
+        Some(self.c.max(self.a * x + self.b))
+    }
+}
+
+fn research_compose_max_affine(
+    left: ResearchMaxAffine,
+    right: ResearchMaxAffine,
+) -> ResearchMaxAffine {
+    /*
+     * left(right(x)).  Besides the max-affine coefficients we propagate
+     * the exact domain for which right(x) is a feasible input to left.
+     */
+    let mut max_input = right.max_input;
+
+    if right.c > left.max_input + 1.0e-12 {
+        max_input = f64::NEG_INFINITY;
+    } else if right.a > 0.0 {
+        let bound =
+            (left.max_input - right.b) /
+            right.a;
+
+        max_input = max_input.min(bound);
+    } else if right.b > left.max_input + 1.0e-12 {
+        max_input = f64::NEG_INFINITY;
+    }
+
+    ResearchMaxAffine {
+        a: left.a * right.a,
+        b: left.a * right.b + left.b,
+        c: left.c.max(left.a * right.c + left.b),
+        max_input,
+    }
+}
+
+fn research_tank_from_packed(
+    packed: &[f64],
+    tank_index: usize,
+) -> ResearchTankParameters {
+    let base = tank_index * BLACKWELL_CONFIG_STRIDE;
+
+    let target_storage_energy = packed[base + 2];
+    let maximum_heat_pump_electrical_power = packed[base + 3];
+    let cop = packed[base + 4];
+    let time_step_hours = packed[base + 6];
+    let storage_energy_per_kelvin = packed[base + 7];
+    let storage_conductance_w_per_kelvin = packed[base + 8];
+    let storage_min_temperature = packed[base + 9];
+    let ambient_temperature = packed[base + 10];
+    let daily_heat_loss = packed[base + 11];
+
+    let (heat_loss_retention, heat_loss_intercept, affine_supported) =
+        if daily_heat_loss >= 0.0 {
+            (
+                1.0,
+                daily_heat_loss * time_step_hours / 24.0,
+                true,
+            )
+        } else if storage_energy_per_kelvin > 0.0 {
+            let conductance_energy =
+                storage_conductance_w_per_kelvin * time_step_hours / 1000.0;
+
+            let slope =
+                conductance_energy / storage_energy_per_kelvin;
+
+            let intercept =
+                conductance_energy *
+                (storage_min_temperature - ambient_temperature);
+
+            (
+                1.0 - slope,
+                intercept,
+                slope >= 0.0 &&
+                    slope < 1.0 &&
+                    intercept >= 0.0,
+            )
+        } else {
+            (0.0, 0.0, false)
+        };
+
+    ResearchTankParameters {
+        target_storage_energy,
+        maximum_heat_pump_electrical_power,
+        cop,
+        time_step_hours,
+        heat_loss_retention,
+        heat_loss_intercept,
+        affine_supported,
+    }
+}
+
+fn research_hp_thermal_energy(
+    export_power: f64,
+    cut_level_power: f64,
+    tank: ResearchTankParameters,
+) -> f64 {
+    let hp_power =
+        (export_power - cut_level_power)
+            .max(0.0)
+            .min(tank.maximum_heat_pump_electrical_power);
+
+    hp_power * tank.cop * tank.time_step_hours
+}
+
+fn research_electrical_energy_at_cut(
+    export_window: &[f64],
+    cut_level_power: f64,
+    tank: ResearchTankParameters,
+) -> f64 {
+    let mut result = 0.0;
+
+    for &export_power in export_window {
+        result +=
+            (export_power - cut_level_power)
+                .max(0.0)
+                .min(tank.maximum_heat_pump_electrical_power) *
+            tank.time_step_hours;
+    }
+
+    result
+}
+
+fn research_energy_cut_level(
+    export_window: &[f64],
+    requested_electrical_energy: f64,
+    tank: ResearchTankParameters,
+) -> f64 {
+    let mut maximum_export_power = 0.0_f64;
+
+    for &value in export_window {
+        maximum_export_power = maximum_export_power.max(value);
+    }
+
+    let maximum_schedulable =
+        research_electrical_energy_at_cut(
+            export_window,
+            0.0,
+            tank,
+        );
+
+    let target =
+        requested_electrical_energy
+            .max(0.0)
+            .min(maximum_schedulable);
+
+    if target <= 0.0 || maximum_export_power <= 0.0 {
+        return maximum_export_power;
+    }
+
+    if target >= maximum_schedulable {
+        return 0.0;
+    }
+
+    let mut lower = 0.0;
+    let mut upper = maximum_export_power;
+
+    for _ in 0..32 {
+        let middle = (lower + upper) * 0.5;
+        let energy =
+            research_electrical_energy_at_cut(
+                export_window,
+                middle,
+                tank,
+            );
+
+        if energy > target {
+            lower = middle;
+        } else {
+            upper = middle;
+        }
+    }
+
+    (lower + upper) * 0.5
+}
+
+fn research_scalar_survives(
+    export_window: &[f64],
+    demand_window: &[f64],
+    cut_level_power: f64,
+    current_storage_energy: f64,
+    minimum_reserve_energy: f64,
+    tank: ResearchTankParameters,
+) -> bool {
+    const EPSILON: f64 = 1.0e-6;
+
+    let reserve =
+        minimum_reserve_energy
+            .max(0.0)
+            .min(tank.target_storage_energy);
+
+    let mut stored =
+        current_storage_energy
+            .max(0.0)
+            .min(tank.target_storage_energy);
+
+    for offset in 0..export_window.len() {
+        let charge =
+            research_hp_thermal_energy(
+                export_window[offset],
+                cut_level_power,
+                tank,
+            );
+
+        if offset == 0 {
+            stored =
+                (stored + charge)
+                    .min(tank.target_storage_energy);
+            continue;
+        }
+
+        let requested_loss =
+            (
+                (1.0 - tank.heat_loss_retention) * stored +
+                tank.heat_loss_intercept
+            )
+            .max(0.0);
+
+        let heat_loss = requested_loss.min(stored);
+        let after_loss = (stored - heat_loss).max(0.0);
+        let demand = demand_window[offset].max(0.0);
+        let discharged = demand.min(after_loss);
+        let before_charge = after_loss - discharged;
+        let unmet = (demand - discharged).max(0.0);
+
+        if unmet > EPSILON {
+            return false;
+        }
+
+        if reserve - before_charge > EPSILON {
+            return false;
+        }
+
+        stored =
+            (before_charge + charge)
+                .min(tank.target_storage_energy);
+    }
+
+    true
+}
+
+fn research_max_affine_survives(
+    export_window: &[f64],
+    demand_window: &[f64],
+    cut_level_power: f64,
+    current_storage_energy: f64,
+    minimum_reserve_energy: f64,
+    tank: ResearchTankParameters,
+) -> Option<bool> {
+    const EPSILON: f64 = 1.0e-6;
+
+    if !tank.affine_supported ||
+        tank.heat_loss_retention <= 0.0 ||
+        export_window.len() != demand_window.len() ||
+        export_window.is_empty()
+    {
+        return None;
+    }
+
+    let reserve =
+        minimum_reserve_energy
+            .max(0.0)
+            .min(tank.target_storage_energy);
+
+    /*
+     * With a strictly positive reserve the canonical tolerance can be
+     * folded exactly into the required-energy threshold.  At a zero
+     * reserve, heat-loss clipping introduces a discontinuous zero-energy
+     * branch; that needs a richer piecewise summary than one max-affine
+     * segment.  The first experiment therefore reports those jobs as
+     * unsupported instead of pretending exact parity.
+     */
+    if reserve <= EPSILON {
+        return None;
+    }
+
+    let current =
+        current_storage_energy
+            .max(0.0)
+            .min(tank.target_storage_energy);
+
+    if export_window.len() == 1 {
+        return Some(true);
+    }
+
+    let inverse_retention =
+        1.0 / tank.heat_loss_retention;
+
+    let mut transforms =
+        Vec::<ResearchMaxAffine>::with_capacity(
+            export_window.len() - 1,
+        );
+
+    for offset in 1..export_window.len() {
+        let demand = demand_window[offset].max(0.0);
+        let charge =
+            research_hp_thermal_energy(
+                export_window[offset],
+                cut_level_power,
+                tank,
+            );
+
+        /*
+         * Required-energy recurrence.  Because reserve > EPSILON for this
+         * exact branch, the scalar 1e-6 survival tolerance folds directly
+         * into the reserve threshold:
+         *
+         * R_i = max(
+         *   (lossIntercept + demand + reserve - EPSILON) / retention,
+         *   R_{i+1}/retention +
+         *     (lossIntercept + demand - charge)/retention
+         * )
+         */
+        transforms.push(
+            ResearchMaxAffine {
+                a: inverse_retention,
+                b:
+                    (
+                        tank.heat_loss_intercept +
+                        demand -
+                        charge
+                    ) *
+                    inverse_retention,
+                c:
+                    (
+                        tank.heat_loss_intercept +
+                        demand +
+                        reserve -
+                        EPSILON
+                    ) *
+                    inverse_retention,
+                max_input:
+                    tank.target_storage_energy,
+            },
+        );
+    }
+
+    /*
+     * Ordered associative tree reduction.
+     * Adjacent transforms are combined as left(right(x)).
+     */
+    while transforms.len() > 1 {
+        let old_len = transforms.len();
+        let mut write = 0usize;
+        let mut read = 0usize;
+
+        while read + 1 < old_len {
+            transforms[write] =
+                research_compose_max_affine(
+                    transforms[read],
+                    transforms[read + 1],
+                );
+            write += 1;
+            read += 2;
+        }
+
+        if read < old_len {
+            transforms[write] = transforms[read];
+            write += 1;
+        }
+
+        transforms.truncate(write);
+    }
+
+    let summary =
+        transforms
+            .first()
+            .copied()
+            .unwrap_or_else(ResearchMaxAffine::identity);
+
+    let required_after_current_bucket =
+        match summary.eval(0.0) {
+            Some(value) => value,
+            None => return Some(false),
+        };
+
+    if required_after_current_bucket >
+        tank.target_storage_energy + 1.0e-9
+    {
+        return Some(false);
+    }
+
+    let current_charge =
+        research_hp_thermal_energy(
+            export_window[0],
+            cut_level_power,
+            tank,
+        );
+
+    let after_current_charge =
+        (current + current_charge)
+            .min(tank.target_storage_energy);
+
+    Some(
+        after_current_charge + 1.0e-12 >=
+        required_after_current_bucket,
+    )
+}
+
+
+// SUNOPT_BLACKWELL_B14_EXACT_ENVELOPE_HELPERS_BEGIN
+#[derive(Clone, Copy, Debug)]
+struct B14Segment {
+    lo: f64,
+    hi: f64,
+    m: f64,
+    b: f64,
+}
+
+#[derive(Clone, Copy)]
+struct B14ExactCutResult {
+    causal: ResearchCausalResult,
+    mathematical_cut: f64,
+    max_segments: usize,
+    hp_breakpoints: usize,
+    capacity_intersections: u32,
+    feasibility_bound_updates: u32,
+}
+
+fn b14_merge(mut segments: Vec<B14Segment>) -> Vec<B14Segment> {
+    segments.retain(|segment| segment.hi > segment.lo + 1.0e-13);
+
+    let mut merged = Vec::<B14Segment>::with_capacity(segments.len());
+
+    for segment in segments {
+        if let Some(last) = merged.last_mut() {
+            let scale =
+                1.0 +
+                last.m.abs().max(segment.m.abs())
+                    .max(last.b.abs())
+                    .max(segment.b.abs());
+
+            if (last.hi - segment.lo).abs() <= 1.0e-11 &&
+                (last.m - segment.m).abs() <= 1.0e-11 * scale &&
+                (last.b - segment.b).abs() <= 1.0e-10 * scale
+            {
+                last.hi = segment.hi;
+                continue;
+            }
+        }
+
+        merged.push(segment);
+    }
+
+    merged
+}
+
+fn b14_clip_capacity(
+    input: &[B14Segment],
+    capacity: f64,
+    intersections: &mut u32,
+) -> Vec<B14Segment> {
+    let mut output = Vec::new();
+
+    for &segment in input {
+        let y0 = segment.m * segment.lo + segment.b;
+        let y1 = segment.m * segment.hi + segment.b;
+        let d0 = y0 - capacity;
+        let d1 = y1 - capacity;
+
+        if segment.m.abs() < 1.0e-15 || d0 * d1 >= 0.0 {
+            if y0 <= capacity && y1 <= capacity {
+                output.push(segment);
+            } else {
+                output.push(B14Segment {
+                    lo: segment.lo,
+                    hi: segment.hi,
+                    m: 0.0,
+                    b: capacity,
+                });
+            }
+            continue;
+        }
+
+        let intersection =
+            ((capacity - segment.b) / segment.m)
+                .max(segment.lo)
+                .min(segment.hi);
+
+        if intersection > segment.lo + 1.0e-13 &&
+            intersection < segment.hi - 1.0e-13
+        {
+            *intersections += 1;
+        }
+
+        let left_is_affine = y0 <= capacity;
+
+        if intersection > segment.lo + 1.0e-13 {
+            output.push(
+                if left_is_affine {
+                    B14Segment {
+                        lo: segment.lo,
+                        hi: intersection,
+                        ..segment
+                    }
+                } else {
+                    B14Segment {
+                        lo: segment.lo,
+                        hi: intersection,
+                        m: 0.0,
+                        b: capacity,
+                    }
+                },
+            );
+        }
+
+        if segment.hi > intersection + 1.0e-13 {
+            output.push(
+                if left_is_affine {
+                    B14Segment {
+                        lo: intersection,
+                        hi: segment.hi,
+                        m: 0.0,
+                        b: capacity,
+                    }
+                } else {
+                    B14Segment {
+                        lo: intersection,
+                        hi: segment.hi,
+                        ..segment
+                    }
+                },
+            );
+        }
+    }
+
+    b14_merge(output)
+}
+
+fn b14_add(
+    left: &[B14Segment],
+    right: &[B14Segment],
+    maximum_cut: f64,
+) -> Vec<B14Segment> {
+    let mut boundaries = vec![0.0, maximum_cut];
+
+    for segment in left {
+        if segment.lo > 0.0 && segment.lo < maximum_cut {
+            boundaries.push(segment.lo);
+        }
+        if segment.hi > 0.0 && segment.hi < maximum_cut {
+            boundaries.push(segment.hi);
+        }
+    }
+
+    for segment in right {
+        if segment.lo > 0.0 && segment.lo < maximum_cut {
+            boundaries.push(segment.lo);
+        }
+        if segment.hi > 0.0 && segment.hi < maximum_cut {
+            boundaries.push(segment.hi);
+        }
+    }
+
+    boundaries.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    boundaries.dedup_by(|a, b| (*a - *b).abs() < 1.0e-12);
+
+    let mut output = Vec::new();
+
+    for pair in boundaries.windows(2) {
+        let lo = pair[0];
+        let hi = pair[1];
+
+        if hi <= lo + 1.0e-13 {
+            continue;
+        }
+
+        let middle = (lo + hi) * 0.5;
+        let left_segment = left
+            .iter()
+            .find(|segment| {
+                middle >= segment.lo - 1.0e-12 &&
+                middle <= segment.hi + 1.0e-12
+            })
+            .unwrap();
+        let right_segment = right
+            .iter()
+            .find(|segment| {
+                middle >= segment.lo - 1.0e-12 &&
+                middle <= segment.hi + 1.0e-12
+            })
+            .unwrap();
+
+        output.push(B14Segment {
+            lo,
+            hi,
+            m: left_segment.m + right_segment.m,
+            b: left_segment.b + right_segment.b,
+        });
+    }
+
+    b14_merge(output)
+}
+
+fn b14_charge(
+    export_power: f64,
+    maximum_cut: f64,
+    tank: ResearchTankParameters,
+) -> Vec<B14Segment> {
+    let factor = tank.cop * tank.time_step_hours;
+    let maximum_power = tank.maximum_heat_pump_electrical_power;
+    let mut boundaries = vec![0.0, maximum_cut];
+
+    for boundary in [export_power - maximum_power, export_power] {
+        if boundary > 0.0 && boundary < maximum_cut {
+            boundaries.push(boundary);
+        }
+    }
+
+    boundaries.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    boundaries.dedup_by(|a, b| (*a - *b).abs() < 1.0e-12);
+
+    let mut output = Vec::new();
+
+    for pair in boundaries.windows(2) {
+        let lo = pair[0];
+        let hi = pair[1];
+        let middle = (lo + hi) * 0.5;
+        let raw_power = export_power - middle;
+
+        if raw_power <= 0.0 {
+            output.push(B14Segment {
+                lo,
+                hi,
+                m: 0.0,
+                b: 0.0,
+            });
+        } else if raw_power >= maximum_power {
+            output.push(B14Segment {
+                lo,
+                hi,
+                m: 0.0,
+                b: maximum_power * factor,
+            });
+        } else {
+            output.push(B14Segment {
+                lo,
+                hi,
+                m: -factor,
+                b: export_power * factor,
+            });
+        }
+    }
+
+    b14_merge(output)
+}
+
+fn b14_truncate_feasible(
+    input: &[B14Segment],
+    threshold: f64,
+    current_hi: f64,
+) -> (f64, bool) {
+    for &segment in input {
+        if segment.lo >= current_hi {
+            break;
+        }
+
+        let segment_hi = segment.hi.min(current_hi);
+        let y_lo = segment.m * segment.lo + segment.b;
+        let y_hi = segment.m * segment_hi + segment.b;
+
+        if y_lo + 1.0e-12 < threshold {
+            return (segment.lo.min(current_hi), true);
+        }
+
+        if y_hi + 1.0e-12 < threshold && segment.m < 0.0 {
+            let boundary =
+                ((threshold - segment.b) / segment.m)
+                    .max(segment.lo)
+                    .min(segment_hi);
+
+            return (boundary.min(current_hi), true);
+        }
+    }
+
+    (current_hi, false)
+}
+
+fn b14_exact_cut(
+    export_window: &[f64],
+    demand_window: &[f64],
+    current_storage_energy: f64,
+    minimum_reserve_energy: f64,
+    requested_electrical_energy: f64,
+    tank: ResearchTankParameters,
+) -> Option<B14ExactCutResult> {
+    const EPSILON: f64 = 1.0e-6;
+
+    if !tank.affine_supported ||
+        tank.heat_loss_retention <= 0.0 ||
+        export_window.is_empty() ||
+        export_window.len() != demand_window.len()
+    {
+        return None;
+    }
+
+    let reserve =
+        minimum_reserve_energy
+            .max(0.0)
+            .min(tank.target_storage_energy);
+
+    if reserve <= EPSILON {
+        return None;
+    }
+
+    let energy_cut =
+        research_energy_cut_level(
+            export_window,
+            requested_electrical_energy,
+            tank,
+        );
+
+    let mut hp_breakpoints =
+        export_window
+            .iter()
+            .flat_map(|&export_power| {
+                [
+                    export_power - tank.maximum_heat_pump_electrical_power,
+                    export_power,
+                ]
+            })
+            .filter(|&value| value > 0.0 && value < energy_cut)
+            .collect::<Vec<_>>();
+
+    hp_breakpoints.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    hp_breakpoints.dedup_by(|a, b| (*a - *b).abs() < 1.0e-12);
+
+    if research_scalar_survives(
+        export_window,
+        demand_window,
+        energy_cut,
+        current_storage_energy,
+        minimum_reserve_energy,
+        tank,
+    ) {
+        return Some(B14ExactCutResult {
+            causal: ResearchCausalResult {
+                cut_level_power: energy_cut,
+                normal_plan_survives: true,
+                maximum_pv_plan_survives: true,
+            },
+            mathematical_cut: energy_cut,
+            max_segments: 1,
+            hp_breakpoints: hp_breakpoints.len(),
+            capacity_intersections: 0,
+            feasibility_bound_updates: 0,
+        });
+    }
+
+    if !research_scalar_survives(
+        export_window,
+        demand_window,
+        0.0,
+        current_storage_energy,
+        minimum_reserve_energy,
+        tank,
+    ) {
+        return Some(B14ExactCutResult {
+            causal: ResearchCausalResult {
+                cut_level_power: 0.0,
+                normal_plan_survives: false,
+                maximum_pv_plan_survives: false,
+            },
+            mathematical_cut: 0.0,
+            max_segments: 1,
+            hp_breakpoints: hp_breakpoints.len(),
+            capacity_intersections: 0,
+            feasibility_bound_updates: 0,
+        });
+    }
+
+    let mut feasible_hi = energy_cut;
+    let mut capacity_intersections = 0_u32;
+    let mut feasibility_bound_updates = 0_u32;
+
+    let current_charge = b14_charge(export_window[0], energy_cut, tank);
+    let current = vec![B14Segment {
+        lo: 0.0,
+        hi: energy_cut,
+        m: 0.0,
+        b: current_storage_energy
+            .max(0.0)
+            .min(tank.target_storage_energy),
+    }];
+
+    let mut stored = b14_clip_capacity(
+        &b14_add(&current, &current_charge, energy_cut),
+        tank.target_storage_energy,
+        &mut capacity_intersections,
+    );
+    let mut maximum_segments = stored.len();
+
+    for offset in 1..export_window.len() {
+        /*
+         * On the feasible branch reserve > EPSILON guarantees positive
+         * post-demand energy. The canonical loss -> demand recurrence is
+         * therefore exactly retention * stored - intercept - demand.
+         */
+        let mut before_charge =
+            stored
+                .iter()
+                .map(|segment| {
+                    B14Segment {
+                        lo: segment.lo,
+                        hi: segment.hi,
+                        m: tank.heat_loss_retention * segment.m,
+                        b:
+                            tank.heat_loss_retention * segment.b -
+                            tank.heat_loss_intercept -
+                            demand_window[offset].max(0.0),
+                    }
+                })
+                .collect::<Vec<_>>();
+
+        before_charge = b14_merge(before_charge);
+
+        let (new_feasible_hi, tightened) =
+            b14_truncate_feasible(
+                &before_charge,
+                reserve - EPSILON,
+                feasible_hi,
+            );
+
+        if tightened && new_feasible_hi < feasible_hi - 1.0e-12 {
+            feasibility_bound_updates += 1;
+        }
+
+        feasible_hi = new_feasible_hi;
+
+        if feasible_hi <= 0.0 {
+            break;
+        }
+
+        let charge = b14_charge(export_window[offset], energy_cut, tank);
+        stored = b14_clip_capacity(
+            &b14_add(&before_charge, &charge, energy_cut),
+            tank.target_storage_energy,
+            &mut capacity_intersections,
+        );
+
+        maximum_segments =
+            maximum_segments
+                .max(stored.len())
+                .max(before_charge.len());
+    }
+
+    let mathematical_cut =
+        feasible_hi
+            .max(0.0)
+            .min(energy_cut);
+
+    /*
+     * Production intentionally returns the lower endpoint after exactly
+     * 20 bisections, not the mathematical threshold itself.
+     */
+    let mut lower = 0.0;
+    let mut upper = energy_cut;
+
+    for _ in 0..20 {
+        let middle = (lower + upper) * 0.5;
+
+        if middle <= mathematical_cut + 1.0e-12 {
+            lower = middle;
+        } else {
+            upper = middle;
+        }
+    }
+
+    Some(B14ExactCutResult {
+        causal: ResearchCausalResult {
+            cut_level_power: lower,
+            normal_plan_survives: false,
+            maximum_pv_plan_survives: true,
+        },
+        mathematical_cut,
+        max_segments: maximum_segments,
+        hp_breakpoints: hp_breakpoints.len(),
+        capacity_intersections,
+        feasibility_bound_updates,
+    })
+}
+// SUNOPT_BLACKWELL_B14_EXACT_ENVELOPE_HELPERS_END
+
+fn research_run_scalar(
+    export_window: &[f64],
+    demand_window: &[f64],
+    current_storage_energy: f64,
+    minimum_reserve_energy: f64,
+    requested_electrical_energy: f64,
+    tank: ResearchTankParameters,
+) -> ResearchCausalResult {
+    let energy_cut =
+        research_energy_cut_level(
+            export_window,
+            requested_electrical_energy,
+            tank,
+        );
+
+    let normal =
+        research_scalar_survives(
+            export_window,
+            demand_window,
+            energy_cut,
+            current_storage_energy,
+            minimum_reserve_energy,
+            tank,
+        );
+
+    if normal {
+        return ResearchCausalResult {
+            cut_level_power: energy_cut,
+            normal_plan_survives: true,
+            maximum_pv_plan_survives: true,
+        };
+    }
+
+    let maximum_pv =
+        research_scalar_survives(
+            export_window,
+            demand_window,
+            0.0,
+            current_storage_energy,
+            minimum_reserve_energy,
+            tank,
+        );
+
+    if !maximum_pv {
+        return ResearchCausalResult {
+            cut_level_power: 0.0,
+            normal_plan_survives: false,
+            maximum_pv_plan_survives: false,
+        };
+    }
+
+    let mut lower = 0.0;
+    let mut upper = energy_cut;
+
+    for _ in 0..20 {
+        let middle = (lower + upper) * 0.5;
+
+        if research_scalar_survives(
+            export_window,
+            demand_window,
+            middle,
+            current_storage_energy,
+            minimum_reserve_energy,
+            tank,
+        ) {
+            lower = middle;
+        } else {
+            upper = middle;
+        }
+    }
+
+    ResearchCausalResult {
+        cut_level_power: lower,
+        normal_plan_survives: false,
+        maximum_pv_plan_survives: true,
+    }
+}
+
+fn research_run_max_affine(
+    export_window: &[f64],
+    demand_window: &[f64],
+    current_storage_energy: f64,
+    minimum_reserve_energy: f64,
+    requested_electrical_energy: f64,
+    tank: ResearchTankParameters,
+) -> Option<ResearchCausalResult> {
+    let energy_cut =
+        research_energy_cut_level(
+            export_window,
+            requested_electrical_energy,
+            tank,
+        );
+
+    let normal =
+        research_max_affine_survives(
+            export_window,
+            demand_window,
+            energy_cut,
+            current_storage_energy,
+            minimum_reserve_energy,
+            tank,
+        )?;
+
+    if normal {
+        return Some(
+            ResearchCausalResult {
+                cut_level_power: energy_cut,
+                normal_plan_survives: true,
+                maximum_pv_plan_survives: true,
+            },
+        );
+    }
+
+    let maximum_pv =
+        research_max_affine_survives(
+            export_window,
+            demand_window,
+            0.0,
+            current_storage_energy,
+            minimum_reserve_energy,
+            tank,
+        )?;
+
+    if !maximum_pv {
+        return Some(
+            ResearchCausalResult {
+                cut_level_power: 0.0,
+                normal_plan_survives: false,
+                maximum_pv_plan_survives: false,
+            },
+        );
+    }
+
+    let mut lower = 0.0;
+    let mut upper = energy_cut;
+
+    for _ in 0..20 {
+        let middle = (lower + upper) * 0.5;
+
+        if research_max_affine_survives(
+            export_window,
+            demand_window,
+            middle,
+            current_storage_energy,
+            minimum_reserve_energy,
+            tank,
+        )? {
+            lower = middle;
+        } else {
+            upper = middle;
+        }
+    }
+
+    Some(
+        ResearchCausalResult {
+            cut_level_power: lower,
+            normal_plan_survives: false,
+            maximum_pv_plan_survives: true,
+        },
+    )
+}
+
+fn research_window(
+    source: &[f64],
+    current_index: usize,
+    horizon_steps: usize,
+) -> Vec<f64> {
+    let mut result = Vec::with_capacity(horizon_steps);
+
+    for offset in 0..horizon_steps {
+        result.push(
+            source[
+                (current_index + offset) % source.len()
+            ],
+        );
+    }
+
+    result
+}
+
+fn research_fourier_reconstruct(
+    source: &[f64],
+    harmonics: usize,
+) -> Vec<f64> {
+    let n = source.len();
+
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let maximum_harmonics =
+        harmonics.min((n.saturating_sub(1)) / 2);
+
+    let inv_n = 1.0 / n as f64;
+    let two_over_n = 2.0 * inv_n;
+    let tau = std::f64::consts::PI * 2.0;
+
+    let dc = source.iter().copied().sum::<f64>() * inv_n;
+
+    let mut cosine = vec![0.0_f64; maximum_harmonics + 1];
+    let mut sine = vec![0.0_f64; maximum_harmonics + 1];
+
+    for k in 1..=maximum_harmonics {
+        let mut c = 0.0;
+        let mut s = 0.0;
+
+        for (index, &value) in source.iter().enumerate() {
+            let angle =
+                tau *
+                k as f64 *
+                index as f64 *
+                inv_n;
+
+            c += value * angle.cos();
+            s += value * angle.sin();
+        }
+
+        cosine[k] = c * two_over_n;
+        sine[k] = s * two_over_n;
+    }
+
+    let mut result = vec![dc; n];
+
+    for index in 0..n {
+        let mut value = dc;
+
+        for k in 1..=maximum_harmonics {
+            let angle =
+                tau *
+                k as f64 *
+                index as f64 *
+                inv_n;
+
+            value +=
+                cosine[k] * angle.cos() +
+                sine[k] * angle.sin();
+        }
+
+        /* Physical arrays are non-negative. */
+        result[index] = value.max(0.0);
+    }
+
+    result
+}
+
+fn research_signal_error(
+    reference: &[f64],
+    approximate: &[f64],
+) -> (f64, f64, f64) {
+    let mut sum_abs = 0.0;
+    let mut sum_sq = 0.0;
+    let mut max_abs = 0.0_f64;
+
+    for (&reference_value, &approximate_value) in
+        reference.iter().zip(approximate.iter())
+    {
+        let error = (reference_value - approximate_value).abs();
+        sum_abs += error;
+        sum_sq += error * error;
+        max_abs = max_abs.max(error);
+    }
+
+    let count = reference.len().max(1) as f64;
+
+    (
+        sum_abs / count,
+        (sum_sq / count).sqrt(),
+        max_abs,
+    )
+}
+
+#[napi(object)]
+pub struct BlackwellPhysicsCompressionResearchResult {
+    pub snapshot_path: String,
+    pub data_length: u32,
+    pub tank_count: u32,
+    pub sample_step_count: u32,
+    pub sample_job_count: u32,
+
+    pub gpu_reference_ms: f64,
+    pub scalar_reference_ms: f64,
+    pub max_affine_ms: f64,
+    pub max_affine_tree_levels: u32,
+    pub max_affine_supported_jobs: u32,
+
+    pub scalar_gpu_max_abs_cut_error: f64,
+    pub scalar_gpu_cut_error_over_1e6: u32,
+
+    pub max_affine_scalar_max_abs_cut_error: f64,
+    pub max_affine_scalar_cut_error_over_1e6: u32,
+    pub max_affine_normal_survival_mismatches: u32,
+    pub max_affine_maxpv_survival_mismatches: u32,
+
+    pub fourier_harmonics: Vec<u32>,
+    pub fourier_coefficients: Vec<u32>,
+    pub fourier_signal_fraction: Vec<f64>,
+    pub fourier_ms: Vec<f64>,
+
+    pub fourier_export_mae: Vec<f64>,
+    pub fourier_export_rmse: Vec<f64>,
+    pub fourier_export_max_abs_error: Vec<f64>,
+    pub fourier_demand_mae: Vec<f64>,
+    pub fourier_demand_rmse: Vec<f64>,
+    pub fourier_demand_max_abs_error: Vec<f64>,
+
+    pub fourier_cut_mae: Vec<f64>,
+    pub fourier_cut_rmse: Vec<f64>,
+    pub fourier_cut_max_abs_error: Vec<f64>,
+    pub fourier_cut_error_over_001: Vec<u32>,
+    pub fourier_cut_error_over_01: Vec<u32>,
+    pub fourier_normal_survival_mismatches: Vec<u32>,
+    pub fourier_maxpv_survival_mismatches: Vec<u32>,
+}
+
+#[napi]
+pub fn run_blackwell_physics_compression_research(
+    snapshot_path: Option<String>,
+    sample_steps: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellPhysicsCompressionResearchResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(blackwell_default_snapshot_path);
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(|error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell benchmark snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            })?;
+
+    if snapshot.steps.is_empty() || snapshot.tank_count == 0 {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty.",
+            ),
+        );
+    }
+
+    let requested_samples =
+        sample_steps
+            .unwrap_or(192)
+            .clamp(2, snapshot.steps.len() as u32)
+            as usize;
+
+    let mut sample_positions = Vec::<usize>::with_capacity(requested_samples);
+
+    for sample in 0..requested_samples {
+        let position =
+            sample *
+            (snapshot.steps.len() - 1) /
+            (requested_samples - 1);
+
+        if sample_positions.last().copied() != Some(position) {
+            sample_positions.push(position);
+        }
+    }
+
+    let tank_parameters =
+        (0..snapshot.tank_count)
+            .map(|tank| {
+                research_tank_from_packed(
+                    &snapshot.packed_config,
+                    tank,
+                )
+            })
+            .collect::<Vec<_>>();
+
+    let selected_device = device_id.unwrap_or(0);
+    let cuda_parameters =
+        blackwell_parameters_from_packed(
+            &snapshot.packed_config,
+            snapshot.data_length,
+        )?;
+
+    let mut context = CudaSimulationContext::new(selected_device)?;
+    context.upload_causal_arrays(
+        &snapshot.export_power,
+        &snapshot.demand_energy,
+    )?;
+    context.configure_causal_static_parameters(&cuda_parameters)?;
+
+    let sample_job_count =
+        sample_positions.len() * snapshot.tank_count;
+
+    let mut gpu_cut_levels =
+        Vec::<f64>::with_capacity(sample_job_count);
+
+    let mut dynamic =
+        vec![
+            SunoptCausalDynamic::default();
+            snapshot.tank_count
+        ];
+
+    let mut gpu_output =
+        vec![0.0_f64; snapshot.tank_count];
+
+    let gpu_started = Instant::now();
+
+    for &position in &sample_positions {
+        let step = &snapshot.steps[position];
+
+        blackwell_dynamic_from_values(
+            &step.dynamic,
+            snapshot.tank_count,
+            &mut dynamic,
+        )?;
+
+        context.run_causal_dynamic_batch_into(
+            step.current_index as usize,
+            step.horizon_steps as usize,
+            &dynamic,
+            &mut gpu_output,
+        )?;
+
+        gpu_cut_levels.extend_from_slice(&gpu_output);
+    }
+
+    let gpu_reference_ms =
+        gpu_started.elapsed().as_secs_f64() * 1000.0;
+
+    let mut scalar_results =
+        Vec::<ResearchCausalResult>::with_capacity(sample_job_count);
+
+    let scalar_started = Instant::now();
+
+    for &position in &sample_positions {
+        let step = &snapshot.steps[position];
+        let horizon = step.horizon_steps as usize;
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                horizon,
+            );
+        let demand_window =
+            research_window(
+                &snapshot.demand_energy,
+                step.current_index as usize,
+                horizon,
+            );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base = tank_index * BLACKWELL_DYNAMIC_STRIDE;
+
+            scalar_results.push(
+                research_run_scalar(
+                    &export_window,
+                    &demand_window,
+                    step.dynamic[base + 0],
+                    step.dynamic[base + 1],
+                    step.dynamic[base + 2],
+                    tank_parameters[tank_index],
+                ),
+            );
+        }
+    }
+
+    let scalar_reference_ms =
+        scalar_started.elapsed().as_secs_f64() * 1000.0;
+
+    let mut scalar_gpu_max_abs_cut_error = 0.0_f64;
+    let mut scalar_gpu_cut_error_over_1e6 = 0_u32;
+
+    for (scalar, &gpu) in
+        scalar_results.iter().zip(gpu_cut_levels.iter())
+    {
+        let error = (scalar.cut_level_power - gpu).abs();
+        scalar_gpu_max_abs_cut_error =
+            scalar_gpu_max_abs_cut_error.max(error);
+
+        if error > 1.0e-6 {
+            scalar_gpu_cut_error_over_1e6 += 1;
+        }
+    }
+
+    let mut max_affine_results =
+        Vec::<Option<ResearchCausalResult>>::with_capacity(sample_job_count);
+
+    let max_affine_started = Instant::now();
+
+    for &position in &sample_positions {
+        let step = &snapshot.steps[position];
+        let horizon = step.horizon_steps as usize;
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                horizon,
+            );
+        let demand_window =
+            research_window(
+                &snapshot.demand_energy,
+                step.current_index as usize,
+                horizon,
+            );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base = tank_index * BLACKWELL_DYNAMIC_STRIDE;
+
+            max_affine_results.push(
+                research_run_max_affine(
+                    &export_window,
+                    &demand_window,
+                    step.dynamic[base + 0],
+                    step.dynamic[base + 1],
+                    step.dynamic[base + 2],
+                    tank_parameters[tank_index],
+                ),
+            );
+        }
+    }
+
+    let max_affine_ms =
+        max_affine_started.elapsed().as_secs_f64() * 1000.0;
+
+    let maximum_horizon =
+        sample_positions
+            .iter()
+            .map(|&position| snapshot.steps[position].horizon_steps as usize)
+            .max()
+            .unwrap_or(1);
+
+    let max_affine_tree_levels =
+        if maximum_horizon <= 2 {
+            0
+        } else {
+            (usize::BITS -
+                (maximum_horizon - 2).leading_zeros())
+                as u32
+        };
+
+    let mut max_affine_supported_jobs = 0_u32;
+    let mut max_affine_scalar_max_abs_cut_error = 0.0_f64;
+    let mut max_affine_scalar_cut_error_over_1e6 = 0_u32;
+    let mut max_affine_normal_survival_mismatches = 0_u32;
+    let mut max_affine_maxpv_survival_mismatches = 0_u32;
+
+    for (reference, candidate) in
+        scalar_results.iter().zip(max_affine_results.iter())
+    {
+        let Some(candidate) = candidate else {
+            continue;
+        };
+
+        max_affine_supported_jobs += 1;
+
+        let error =
+            (reference.cut_level_power - candidate.cut_level_power).abs();
+
+        max_affine_scalar_max_abs_cut_error =
+            max_affine_scalar_max_abs_cut_error.max(error);
+
+        if error > 1.0e-6 {
+            max_affine_scalar_cut_error_over_1e6 += 1;
+        }
+
+        if reference.normal_plan_survives !=
+            candidate.normal_plan_survives
+        {
+            max_affine_normal_survival_mismatches += 1;
+        }
+
+        if reference.maximum_pv_plan_survives !=
+            candidate.maximum_pv_plan_survives
+        {
+            max_affine_maxpv_survival_mismatches += 1;
+        }
+    }
+
+    let harmonics_list =
+        [4usize, 8, 16, 24, 32, 48, 64, 80];
+
+    let mut fourier_harmonics = Vec::<u32>::new();
+    let mut fourier_coefficients = Vec::<u32>::new();
+    let mut fourier_signal_fraction = Vec::<f64>::new();
+    let mut fourier_ms = Vec::<f64>::new();
+
+    let mut fourier_export_mae = Vec::<f64>::new();
+    let mut fourier_export_rmse = Vec::<f64>::new();
+    let mut fourier_export_max_abs_error = Vec::<f64>::new();
+    let mut fourier_demand_mae = Vec::<f64>::new();
+    let mut fourier_demand_rmse = Vec::<f64>::new();
+    let mut fourier_demand_max_abs_error = Vec::<f64>::new();
+
+    let mut fourier_cut_mae = Vec::<f64>::new();
+    let mut fourier_cut_rmse = Vec::<f64>::new();
+    let mut fourier_cut_max_abs_error = Vec::<f64>::new();
+    let mut fourier_cut_error_over_001 = Vec::<u32>::new();
+    let mut fourier_cut_error_over_01 = Vec::<u32>::new();
+    let mut fourier_normal_survival_mismatches = Vec::<u32>::new();
+    let mut fourier_maxpv_survival_mismatches = Vec::<u32>::new();
+
+    for &harmonics in &harmonics_list {
+        if harmonics >= maximum_horizon / 2 {
+            continue;
+        }
+
+        let started = Instant::now();
+
+        let mut export_abs_sum = 0.0;
+        let mut export_sq_sum = 0.0;
+        let mut export_max = 0.0_f64;
+        let mut demand_abs_sum = 0.0;
+        let mut demand_sq_sum = 0.0;
+        let mut demand_max = 0.0_f64;
+        let mut signal_count = 0usize;
+
+        let mut cut_abs_sum = 0.0;
+        let mut cut_sq_sum = 0.0;
+        let mut cut_max = 0.0_f64;
+        let mut cut_count = 0usize;
+        let mut over_001 = 0_u32;
+        let mut over_01 = 0_u32;
+        let mut normal_mismatches = 0_u32;
+        let mut maxpv_mismatches = 0_u32;
+
+        let mut reference_offset = 0usize;
+
+        for &position in &sample_positions {
+            let step = &snapshot.steps[position];
+            let horizon = step.horizon_steps as usize;
+
+            let export_window =
+                research_window(
+                    &snapshot.export_power,
+                    step.current_index as usize,
+                    horizon,
+                );
+            let demand_window =
+                research_window(
+                    &snapshot.demand_energy,
+                    step.current_index as usize,
+                    horizon,
+                );
+
+            let export_fourier =
+                research_fourier_reconstruct(
+                    &export_window,
+                    harmonics,
+                );
+            let demand_fourier =
+                research_fourier_reconstruct(
+                    &demand_window,
+                    harmonics,
+                );
+
+            let (export_mae, export_rmse, export_max_error) =
+                research_signal_error(
+                    &export_window,
+                    &export_fourier,
+                );
+            let (demand_mae, demand_rmse, demand_max_error) =
+                research_signal_error(
+                    &demand_window,
+                    &demand_fourier,
+                );
+
+            let n = horizon as f64;
+            export_abs_sum += export_mae * n;
+            export_sq_sum += export_rmse * export_rmse * n;
+            export_max = export_max.max(export_max_error);
+            demand_abs_sum += demand_mae * n;
+            demand_sq_sum += demand_rmse * demand_rmse * n;
+            demand_max = demand_max.max(demand_max_error);
+            signal_count += horizon;
+
+            for tank_index in 0..snapshot.tank_count {
+                let base = tank_index * BLACKWELL_DYNAMIC_STRIDE;
+                let candidate =
+                    research_run_scalar(
+                        &export_fourier,
+                        &demand_fourier,
+                        step.dynamic[base + 0],
+                        step.dynamic[base + 1],
+                        step.dynamic[base + 2],
+                        tank_parameters[tank_index],
+                    );
+
+                let reference =
+                    scalar_results[reference_offset + tank_index];
+
+                let cut_error =
+                    (candidate.cut_level_power -
+                        reference.cut_level_power)
+                        .abs();
+
+                cut_abs_sum += cut_error;
+                cut_sq_sum += cut_error * cut_error;
+                cut_max = cut_max.max(cut_error);
+                cut_count += 1;
+
+                if cut_error > 0.01 {
+                    over_001 += 1;
+                }
+
+                if cut_error > 0.1 {
+                    over_01 += 1;
+                }
+
+                if candidate.normal_plan_survives !=
+                    reference.normal_plan_survives
+                {
+                    normal_mismatches += 1;
+                }
+
+                if candidate.maximum_pv_plan_survives !=
+                    reference.maximum_pv_plan_survives
+                {
+                    maxpv_mismatches += 1;
+                }
+            }
+
+            reference_offset += snapshot.tank_count;
+        }
+
+        let elapsed_ms =
+            started.elapsed().as_secs_f64() * 1000.0;
+
+        let signal_denominator = signal_count.max(1) as f64;
+        let cut_denominator = cut_count.max(1) as f64;
+
+        fourier_harmonics.push(harmonics as u32);
+        fourier_coefficients.push((1 + 2 * harmonics) as u32);
+        fourier_signal_fraction.push(
+            (1 + 2 * harmonics) as f64 /
+            maximum_horizon as f64,
+        );
+        fourier_ms.push(elapsed_ms);
+
+        fourier_export_mae.push(export_abs_sum / signal_denominator);
+        fourier_export_rmse.push((export_sq_sum / signal_denominator).sqrt());
+        fourier_export_max_abs_error.push(export_max);
+        fourier_demand_mae.push(demand_abs_sum / signal_denominator);
+        fourier_demand_rmse.push((demand_sq_sum / signal_denominator).sqrt());
+        fourier_demand_max_abs_error.push(demand_max);
+
+        fourier_cut_mae.push(cut_abs_sum / cut_denominator);
+        fourier_cut_rmse.push((cut_sq_sum / cut_denominator).sqrt());
+        fourier_cut_max_abs_error.push(cut_max);
+        fourier_cut_error_over_001.push(over_001);
+        fourier_cut_error_over_01.push(over_01);
+        fourier_normal_survival_mismatches.push(normal_mismatches);
+        fourier_maxpv_survival_mismatches.push(maxpv_mismatches);
+    }
+
+    Ok(
+        BlackwellPhysicsCompressionResearchResult {
+            snapshot_path: path.display().to_string(),
+            data_length: snapshot.data_length as u32,
+            tank_count: snapshot.tank_count as u32,
+            sample_step_count: sample_positions.len() as u32,
+            sample_job_count: sample_job_count as u32,
+
+            gpu_reference_ms,
+            scalar_reference_ms,
+            max_affine_ms,
+            max_affine_tree_levels,
+            max_affine_supported_jobs,
+
+            scalar_gpu_max_abs_cut_error,
+            scalar_gpu_cut_error_over_1e6,
+
+            max_affine_scalar_max_abs_cut_error,
+            max_affine_scalar_cut_error_over_1e6,
+            max_affine_normal_survival_mismatches,
+            max_affine_maxpv_survival_mismatches,
+
+            fourier_harmonics,
+            fourier_coefficients,
+            fourier_signal_fraction,
+            fourier_ms,
+
+            fourier_export_mae,
+            fourier_export_rmse,
+            fourier_export_max_abs_error,
+            fourier_demand_mae,
+            fourier_demand_rmse,
+            fourier_demand_max_abs_error,
+
+            fourier_cut_mae,
+            fourier_cut_rmse,
+            fourier_cut_max_abs_error,
+            fourier_cut_error_over_001,
+            fourier_cut_error_over_01,
+            fourier_normal_survival_mismatches,
+            fourier_maxpv_survival_mismatches,
+        },
+    )
+}
+// SUNOPT_BLACKWELL_PHYSICS_COMPRESSION_RESEARCH_END
+
+
+// SUNOPT_BLACKWELL_PIECEWISE_AFFINE_B3_FN_BEGIN
+#[napi]
+pub fn run_blackwell_piecewise_affine_b3(
+    snapshot_path: Option<String>,
+    sample_steps: Option<u32>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellPiecewiseAffineB3Result> {
+    let path = snapshot_path
+        .map(PathBuf::from)
+        .unwrap_or_else(blackwell_default_snapshot_path);
+
+    let snapshot = read_blackwell_snapshot(&path).map_err(|error| {
+        Error::from_reason(format!(
+            "Unable to read Blackwell benchmark snapshot {}: {error}",
+            path.display(),
+        ))
+    })?;
+
+    if snapshot.steps.is_empty() || snapshot.tank_count == 0 ||
+        snapshot.export_power.is_empty() ||
+        snapshot.demand_energy.len() != snapshot.export_power.len()
+    {
+        return Err(Error::from_reason("Blackwell snapshot is empty or inconsistent."));
+    }
+
+    let requested_samples = sample_steps
+        .unwrap_or(192)
+        .clamp(2, snapshot.steps.len() as u32) as usize;
+
+    let mut sample_positions = Vec::<usize>::with_capacity(requested_samples);
+    for sample in 0..requested_samples {
+        let position = sample * (snapshot.steps.len() - 1) / (requested_samples - 1);
+        if sample_positions.last().copied() != Some(position) {
+            sample_positions.push(position);
+        }
+    }
+
+    let selected_device = device_id.unwrap_or(0);
+    let repetitions = repetitions.unwrap_or(20).clamp(1, 10_000);
+
+    let tank_parameters = (0..snapshot.tank_count)
+        .map(|tank| research_tank_from_packed(&snapshot.packed_config, tank))
+        .collect::<Vec<_>>();
+
+    let mut packed_tanks = Vec::<f64>::with_capacity(snapshot.tank_count * 6);
+    for tank in &tank_parameters {
+        packed_tanks.push(tank.target_storage_energy);
+        packed_tanks.push(tank.maximum_heat_pump_electrical_power);
+        packed_tanks.push(tank.cop * tank.time_step_hours);
+        packed_tanks.push(tank.heat_loss_retention);
+        packed_tanks.push(tank.heat_loss_intercept);
+        packed_tanks.push(if tank.affine_supported { 1.0 } else { 0.0 });
+    }
+
+    let step_count = sample_positions.len();
+    let job_count = step_count * snapshot.tank_count;
+    let mut current_indices = Vec::<u32>::with_capacity(step_count);
+    let mut horizon_steps = Vec::<u32>::with_capacity(step_count);
+    let mut dynamic_values = Vec::<f64>::with_capacity(job_count * 2);
+    let mut energy_cut_levels = Vec::<f64>::with_capacity(job_count);
+    let mut reference_results = Vec::<ResearchCausalResult>::with_capacity(job_count);
+    let mut supported_mask = Vec::<bool>::with_capacity(job_count);
+
+    let mut supported_jobs = 0_u32;
+    let mut correction_search_jobs = 0_u32;
+
+    for &position in &sample_positions {
+        let step = &snapshot.steps[position];
+        let horizon = step.horizon_steps as usize;
+        if horizon == 0 || horizon > 256 {
+            return Err(Error::from_reason(format!(
+                "B3 benchmark supports horizon 1..=256; snapshot contains {horizon}."
+            )));
+        }
+
+        current_indices.push(step.current_index);
+        horizon_steps.push(step.horizon_steps);
+
+        let export_window = research_window(
+            &snapshot.export_power,
+            step.current_index as usize,
+            horizon,
+        );
+        let demand_window = research_window(
+            &snapshot.demand_energy,
+            step.current_index as usize,
+            horizon,
+        );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base = tank_index * BLACKWELL_DYNAMIC_STRIDE;
+            let current = step.dynamic[base + 0];
+            let reserve_input = step.dynamic[base + 1];
+            let requested = step.dynamic[base + 2];
+            let tank = tank_parameters[tank_index];
+
+            dynamic_values.push(current);
+            dynamic_values.push(reserve_input);
+
+            let energy_cut = research_energy_cut_level(&export_window, requested, tank);
+            energy_cut_levels.push(energy_cut);
+
+            let reference = research_run_scalar(
+                &export_window,
+                &demand_window,
+                current,
+                reserve_input,
+                requested,
+                tank,
+            );
+
+            let reserve = reserve_input.max(0.0).min(tank.target_storage_energy);
+            let supported = tank.affine_supported &&
+                tank.heat_loss_retention > 0.0 &&
+                reserve > 1.0e-6;
+
+            if supported {
+                supported_jobs += 1;
+                if !reference.normal_plan_survives && reference.maximum_pv_plan_survives {
+                    correction_search_jobs += 1;
+                }
+            }
+
+            supported_mask.push(supported);
+            reference_results.push(reference);
+        }
+    }
+
+    /* Existing complete causal GPU reference on the same sampled steps. */
+    let cuda_parameters = blackwell_parameters_from_packed(
+        &snapshot.packed_config,
+        snapshot.data_length,
+    )?;
+    let mut reference_context = CudaSimulationContext::new(selected_device)?;
+    reference_context.upload_causal_arrays(&snapshot.export_power, &snapshot.demand_energy)?;
+    reference_context.configure_causal_static_parameters(&cuda_parameters)?;
+    let mut reference_dynamic = vec![SunoptCausalDynamic::default(); snapshot.tank_count];
+    let mut reference_output = vec![0.0_f64; snapshot.tank_count];
+
+    let reference_started = Instant::now();
+    for &position in &sample_positions {
+        let step = &snapshot.steps[position];
+        blackwell_dynamic_from_values(
+            &step.dynamic,
+            snapshot.tank_count,
+            &mut reference_dynamic,
+        )?;
+        reference_context.run_causal_dynamic_batch_into(
+            step.current_index as usize,
+            step.horizon_steps as usize,
+            &reference_dynamic,
+            &mut reference_output,
+        )?;
+    }
+    let reference_full_causal_gpu_ms = reference_started.elapsed().as_secs_f64() * 1000.0;
+
+    let iteration_limits = vec![1_u32, 2, 3, 4, 6, 8, 12, 16, 20, 24, 32];
+    let mut upload_ms = Vec::<f64>::new();
+    let mut kernel_ms = Vec::<f64>::new();
+    let mut download_ms = Vec::<f64>::new();
+    let mut wall_ms = Vec::<f64>::new();
+    let mut annual_projected_kernel_ms = Vec::<f64>::new();
+    let mut status_mismatches = Vec::<u32>::new();
+    let mut max_abs_cut_error = Vec::<f64>::new();
+    let mut mean_abs_cut_error = Vec::<f64>::new();
+    let mut cut_error_over_1e6 = Vec::<u32>::new();
+    let mut cut_error_over_1e5 = Vec::<u32>::new();
+    let mut cut_error_over_1e4 = Vec::<u32>::new();
+    let mut average_correction_iterations = Vec::<f64>::new();
+    let mut average_evaluations_supported = Vec::<f64>::new();
+    let mut maximum_bracket_width = Vec::<f64>::new();
+
+    for &limit in &iteration_limits {
+        let mut cuts = vec![0.0_f64; job_count];
+        let mut status = vec![0_u32; job_count];
+        let mut iterations = vec![0_u32; job_count];
+        let mut evaluations = vec![0_u32; job_count];
+        let mut widths = vec![0.0_f64; job_count];
+        let mut this_upload = 0.0_f64;
+        let mut kernel_total = 0.0_f64;
+        let mut this_download = 0.0_f64;
+        let mut this_wall = 0.0_f64;
+
+        let error = unsafe {
+            sunopt_cuda_run_piecewise_affine_b3_benchmark(
+                selected_device,
+                snapshot.export_power.as_ptr(),
+                snapshot.demand_energy.as_ptr(),
+                snapshot.export_power.len(),
+                packed_tanks.as_ptr(),
+                snapshot.tank_count,
+                current_indices.as_ptr(),
+                horizon_steps.as_ptr(),
+                dynamic_values.as_ptr(),
+                energy_cut_levels.as_ptr(),
+                step_count,
+                limit,
+                repetitions,
+                cuts.as_mut_ptr(),
+                status.as_mut_ptr(),
+                iterations.as_mut_ptr(),
+                evaluations.as_mut_ptr(),
+                widths.as_mut_ptr(),
+                &mut this_upload,
+                &mut kernel_total,
+                &mut this_download,
+                &mut this_wall,
+            )
+        };
+
+        if error != 0 {
+            return Err(Error::from_reason(format!(
+                "CUDA B3 piecewise-affine benchmark failed with CUDA error code {error}."
+            )));
+        }
+
+        let this_kernel = kernel_total / repetitions as f64;
+        let mut mismatch_count = 0_u32;
+        let mut max_error = 0.0_f64;
+        let mut sum_error = 0.0_f64;
+        let mut count_error = 0_u32;
+        let mut over_1e6 = 0_u32;
+        let mut over_1e5 = 0_u32;
+        let mut over_1e4 = 0_u32;
+        let mut correction_iteration_sum = 0_u64;
+        let mut correction_count = 0_u32;
+        let mut evaluation_sum = 0_u64;
+        let mut max_width = 0.0_f64;
+
+        for job in 0..job_count {
+            if !supported_mask[job] {
+                if status[job] != 3 { mismatch_count += 1; }
+                continue;
+            }
+
+            let reference = reference_results[job];
+            let expected_status = if reference.normal_plan_survives {
+                0_u32
+            } else if !reference.maximum_pv_plan_survives {
+                1_u32
+            } else {
+                2_u32
+            };
+
+            if status[job] != expected_status { mismatch_count += 1; }
+
+            let cut_error = (cuts[job] - reference.cut_level_power).abs();
+            max_error = max_error.max(cut_error);
+            sum_error += cut_error;
+            count_error += 1;
+            if cut_error > 1.0e-6 { over_1e6 += 1; }
+            if cut_error > 1.0e-5 { over_1e5 += 1; }
+            if cut_error > 1.0e-4 { over_1e4 += 1; }
+
+            evaluation_sum += evaluations[job] as u64;
+            max_width = max_width.max(widths[job]);
+
+            if expected_status == 2 {
+                correction_iteration_sum += iterations[job] as u64;
+                correction_count += 1;
+            }
+        }
+
+        upload_ms.push(this_upload);
+        kernel_ms.push(this_kernel);
+        download_ms.push(this_download);
+        wall_ms.push(this_wall);
+        annual_projected_kernel_ms.push(
+            this_kernel * snapshot.steps.len() as f64 / step_count as f64
+        );
+        status_mismatches.push(mismatch_count);
+        max_abs_cut_error.push(max_error);
+        mean_abs_cut_error.push(if count_error > 0 { sum_error / count_error as f64 } else { 0.0 });
+        cut_error_over_1e6.push(over_1e6);
+        cut_error_over_1e5.push(over_1e5);
+        cut_error_over_1e4.push(over_1e4);
+        average_correction_iterations.push(
+            if correction_count > 0 {
+                correction_iteration_sum as f64 / correction_count as f64
+            } else { 0.0 }
+        );
+        average_evaluations_supported.push(
+            if supported_jobs > 0 {
+                evaluation_sum as f64 / supported_jobs as f64
+            } else { 0.0 }
+        );
+        maximum_bracket_width.push(max_width);
+    }
+
+    Ok(BlackwellPiecewiseAffineB3Result {
+        snapshot_path: path.display().to_string(),
+        device_id: selected_device,
+        repetitions,
+        annual_step_count: snapshot.steps.len() as u32,
+        sample_step_count: step_count as u32,
+        sample_job_count: job_count as u32,
+        supported_jobs,
+        unsupported_jobs: job_count as u32 - supported_jobs,
+        correction_search_jobs,
+        reference_full_causal_gpu_ms,
+        iteration_limits,
+        upload_ms,
+        kernel_ms,
+        download_ms,
+        wall_ms,
+        annual_projected_kernel_ms,
+        status_mismatches,
+        max_abs_cut_error,
+        mean_abs_cut_error,
+        cut_error_over_1e6,
+        cut_error_over_1e5,
+        cut_error_over_1e4,
+        average_correction_iterations,
+        average_evaluations_supported,
+        maximum_bracket_width,
+    })
+}
+// SUNOPT_BLACKWELL_PIECEWISE_AFFINE_B3_FN_END
+
+
+// SUNOPT_BLACKWELL_MAX_AFFINE_TREE_FN_BEGIN
+#[napi]
+pub fn run_blackwell_max_affine_cuda_tree(
+    snapshot_path:
+        Option<String>,
+
+    sample_steps:
+        Option<u32>,
+
+    repetitions:
+        Option<u32>,
+
+    device_id:
+        Option<i32>,
+) -> Result<BlackwellMaxAffineCudaTreeResult> {
+    let path =
+        snapshot_path
+            .map(
+                PathBuf::from,
+            )
+            .unwrap_or_else(
+                blackwell_default_snapshot_path,
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(
+            &path,
+        )
+        .map_err(
+            |error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell benchmark snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            },
+        )?;
+
+    if (
+        snapshot.steps.is_empty() ||
+        snapshot.tank_count == 0 ||
+        snapshot.export_power.is_empty() ||
+        snapshot.demand_energy.len() !=
+            snapshot.export_power.len()
+    ) {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty or inconsistent.",
+            ),
+        );
+    }
+
+    let requested_samples =
+        sample_steps
+            .unwrap_or(
+                192,
+            )
+            .clamp(
+                2,
+                snapshot.steps.len()
+                    as u32,
+            )
+            as usize;
+
+    let mut sample_positions =
+        Vec::<usize>::with_capacity(
+            requested_samples,
+        );
+
+    for sample in
+        0..
+        requested_samples
+    {
+        let position =
+            sample *
+            (
+                snapshot.steps.len() -
+                1
+            ) /
+            (
+                requested_samples -
+                1
+            );
+
+        if (
+            sample_positions
+                .last()
+                .copied() !=
+            Some(
+                position,
+            )
+        ) {
+            sample_positions.push(
+                position,
+            );
+        }
+    }
+
+    let selected_device =
+        device_id
+            .unwrap_or(
+                0,
+            );
+
+    let repetitions =
+        repetitions
+            .unwrap_or(
+                20,
+            )
+            .clamp(
+                1,
+                10_000,
+            );
+
+    let tank_parameters =
+        (
+            0..
+            snapshot.tank_count
+        )
+        .map(
+            |tank_index| {
+                research_tank_from_packed(
+                    &snapshot.packed_config,
+                    tank_index,
+                )
+            },
+        )
+        .collect::<Vec<_>>();
+
+    let mut packed_tanks =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count *
+            6,
+        );
+
+    for tank in
+        &tank_parameters
+    {
+        packed_tanks.push(
+            tank.target_storage_energy,
+        );
+
+        packed_tanks.push(
+            tank.maximum_heat_pump_electrical_power,
+        );
+
+        packed_tanks.push(
+            tank.cop *
+            tank.time_step_hours,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_retention,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_intercept,
+        );
+
+        packed_tanks.push(
+            if tank.affine_supported {
+                1.0
+            } else {
+                0.0
+            },
+        );
+    }
+
+    let step_count =
+        sample_positions.len();
+
+    let job_count =
+        step_count *
+        snapshot.tank_count;
+
+    let check_count =
+        job_count *
+        2;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut horizon_steps =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut dynamic_values =
+        Vec::<f64>::with_capacity(
+            job_count *
+            2,
+        );
+
+    let mut cut_levels =
+        Vec::<f64>::with_capacity(
+            check_count,
+        );
+
+    let mut expected_survival =
+        Vec::<u32>::with_capacity(
+            check_count,
+        );
+
+    let mut supported_jobs =
+        0_u32;
+
+    for &position in
+        &sample_positions
+    {
+        let step =
+            &snapshot.steps[
+                position
+            ];
+
+        let horizon =
+            step.horizon_steps
+                as usize;
+
+        if (
+            horizon == 0 ||
+            horizon > 256
+        ) {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Max-affine CUDA tree benchmark supports horizon 1..=256; snapshot contains horizon {horizon}.",
+                    ),
+                ),
+            );
+        }
+
+        current_indices.push(
+            step.current_index,
+        );
+
+        horizon_steps.push(
+            step.horizon_steps,
+        );
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index
+                    as usize,
+                horizon,
+            );
+
+        let demand_window =
+            research_window(
+                &snapshot.demand_energy,
+                step.current_index
+                    as usize,
+                horizon,
+            );
+
+        for tank_index in
+            0..
+            snapshot.tank_count
+        {
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            let current_storage_energy =
+                step.dynamic[
+                    base +
+                    0
+                ];
+
+            let minimum_reserve_energy =
+                step.dynamic[
+                    base +
+                    1
+                ];
+
+            let requested_electrical_energy =
+                step.dynamic[
+                    base +
+                    2
+                ];
+
+            let tank =
+                tank_parameters[
+                    tank_index
+                ];
+
+            dynamic_values.push(
+                current_storage_energy,
+            );
+
+            dynamic_values.push(
+                minimum_reserve_energy,
+            );
+
+            let energy_cut =
+                research_energy_cut_level(
+                    &export_window,
+                    requested_electrical_energy,
+                    tank,
+                );
+
+            cut_levels.push(
+                energy_cut,
+            );
+
+            cut_levels.push(
+                0.0,
+            );
+
+            let reserve =
+                minimum_reserve_energy
+                    .max(
+                        0.0,
+                    )
+                    .min(
+                        tank.target_storage_energy,
+                    );
+
+            let exact_supported =
+                tank.affine_supported &&
+                tank.heat_loss_retention >
+                    0.0 &&
+                reserve >
+                    1.0e-6;
+
+            if exact_supported {
+                supported_jobs +=
+                    1;
+
+                expected_survival.push(
+                    if research_scalar_survives(
+                        &export_window,
+                        &demand_window,
+                        energy_cut,
+                        current_storage_energy,
+                        minimum_reserve_energy,
+                        tank,
+                    ) {
+                        1
+                    } else {
+                        0
+                    },
+                );
+
+                expected_survival.push(
+                    if research_scalar_survives(
+                        &export_window,
+                        &demand_window,
+                        0.0,
+                        current_storage_energy,
+                        minimum_reserve_energy,
+                        tank,
+                    ) {
+                        1
+                    } else {
+                        0
+                    },
+                );
+            } else {
+                expected_survival.push(
+                    2,
+                );
+
+                expected_survival.push(
+                    2,
+                );
+            }
+        }
+    }
+
+    /*
+     * Existing complete causal GPU reference on the same sampled steps.
+     * This is context only; it performs the whole causal cut search.
+     */
+    let cuda_parameters =
+        blackwell_parameters_from_packed(
+            &snapshot.packed_config,
+            snapshot.data_length,
+        )?;
+
+    let mut reference_context =
+        CudaSimulationContext::new(
+            selected_device,
+        )?;
+
+    reference_context
+        .upload_causal_arrays(
+            &snapshot.export_power,
+            &snapshot.demand_energy,
+        )?;
+
+    reference_context
+        .configure_causal_static_parameters(
+            &cuda_parameters,
+        )?;
+
+    let mut reference_dynamic =
+        vec![
+            SunoptCausalDynamic::default();
+            snapshot.tank_count
+        ];
+
+    let mut reference_output =
+        vec![
+            0.0_f64;
+            snapshot.tank_count
+        ];
+
+    let reference_started =
+        Instant::now();
+
+    for &position in
+        &sample_positions
+    {
+        let step =
+            &snapshot.steps[
+                position
+            ];
+
+        blackwell_dynamic_from_values(
+            &step.dynamic,
+            snapshot.tank_count,
+            &mut reference_dynamic,
+        )?;
+
+        reference_context
+            .run_causal_dynamic_batch_into(
+                step.current_index
+                    as usize,
+                step.horizon_steps
+                    as usize,
+                &reference_dynamic,
+                &mut reference_output,
+            )?;
+    }
+
+    let reference_full_causal_gpu_ms =
+        reference_started
+            .elapsed()
+            .as_secs_f64() *
+        1000.0;
+
+    let mut gpu_survival =
+        vec![
+            0_u32;
+            check_count
+        ];
+
+    let mut h2d_ms =
+        0.0_f64;
+
+    let mut kernel_total_ms =
+        0.0_f64;
+
+    let mut d2h_ms =
+        0.0_f64;
+
+    let mut wall_ms =
+        0.0_f64;
+
+    let error =
+        unsafe {
+            sunopt_cuda_run_max_affine_tree_benchmark(
+                selected_device,
+                snapshot.export_power
+                    .as_ptr(),
+                snapshot.demand_energy
+                    .as_ptr(),
+                snapshot.export_power
+                    .len(),
+                packed_tanks
+                    .as_ptr(),
+                snapshot.tank_count,
+                current_indices
+                    .as_ptr(),
+                horizon_steps
+                    .as_ptr(),
+                dynamic_values
+                    .as_ptr(),
+                cut_levels
+                    .as_ptr(),
+                step_count,
+                repetitions,
+                gpu_survival
+                    .as_mut_ptr(),
+                &mut h2d_ms,
+                &mut kernel_total_ms,
+                &mut d2h_ms,
+                &mut wall_ms,
+            )
+        };
+
+    if (
+        error !=
+        0
+    ) {
+        return Err(
+            Error::from_reason(
+                format!(
+                    "CUDA max-affine tree benchmark failed with CUDA error code {error}.",
+                ),
+            ),
+        );
+    }
+
+    let mut normal_survives_jobs =
+        0_u32;
+
+    let mut normal_fails_jobs =
+        0_u32;
+
+    let mut maxpv_fails_jobs =
+        0_u32;
+
+    let mut correction_search_jobs =
+        0_u32;
+
+    let mut normal_survival_mismatches =
+        0_u32;
+
+    let mut maxpv_survival_mismatches =
+        0_u32;
+
+    let mut unexpected_gpu_unsupported_checks =
+        0_u32;
+
+    for job in
+        0..
+        job_count
+    {
+        let normal_index =
+            job *
+            2;
+
+        let maxpv_index =
+            normal_index +
+            1;
+
+        let expected_normal =
+            expected_survival[
+                normal_index
+            ];
+
+        let expected_maxpv =
+            expected_survival[
+                maxpv_index
+            ];
+
+        let gpu_normal =
+            gpu_survival[
+                normal_index
+            ];
+
+        let gpu_maxpv =
+            gpu_survival[
+                maxpv_index
+            ];
+
+        if expected_normal != 2 {
+            if expected_normal == 1 {
+                normal_survives_jobs +=
+                    1;
+            } else {
+                normal_fails_jobs +=
+                    1;
+
+                if expected_maxpv == 0 {
+                    maxpv_fails_jobs +=
+                        1;
+                } else {
+                    correction_search_jobs +=
+                        1;
+                }
+            }
+        }
+
+        if (
+            expected_normal != 2 &&
+            gpu_normal == 2
+        ) {
+            unexpected_gpu_unsupported_checks +=
+                1;
+        }
+
+        if (
+            expected_maxpv != 2 &&
+            gpu_maxpv == 2
+        ) {
+            unexpected_gpu_unsupported_checks +=
+                1;
+        }
+
+        if (
+            expected_normal != 2 &&
+            gpu_normal !=
+                expected_normal
+        ) {
+            normal_survival_mismatches +=
+                1;
+        }
+
+        if (
+            expected_maxpv != 2 &&
+            gpu_maxpv !=
+                expected_maxpv
+        ) {
+            maxpv_survival_mismatches +=
+                1;
+        }
+    }
+
+    let candidate_kernel_ms =
+        kernel_total_ms /
+        repetitions
+            as f64;
+
+    let supported_check_count =
+        supported_jobs
+            as f64 *
+        2.0;
+
+    let candidate_ns_per_survival_check =
+        if (
+            supported_check_count >
+            0.0
+        ) {
+            candidate_kernel_ms *
+            1_000_000.0 /
+            supported_check_count
+        } else {
+            0.0
+        };
+
+    let projected_survival_check_count =
+        supported_jobs +
+        normal_fails_jobs +
+        correction_search_jobs *
+            20;
+
+    let projected_tree_kernel_ms =
+        if supported_jobs > 0 {
+            candidate_kernel_ms *
+            projected_survival_check_count
+                as f64 /
+            (
+                supported_jobs
+                    as f64 *
+                2.0
+            )
+        } else {
+            0.0
+        };
+
+    Ok(
+        BlackwellMaxAffineCudaTreeResult {
+            snapshot_path:
+                path
+                    .display()
+                    .to_string(),
+
+            device_id:
+                selected_device,
+
+            repetitions,
+
+            sample_step_count:
+                step_count
+                    as u32,
+
+            sample_job_count:
+                job_count
+                    as u32,
+
+            survival_check_count:
+                check_count
+                    as u32,
+
+            supported_jobs,
+
+            unsupported_jobs:
+                job_count
+                    as u32 -
+                supported_jobs,
+
+            normal_survives_jobs,
+
+            normal_fails_jobs,
+
+            maxpv_fails_jobs,
+
+            correction_search_jobs,
+
+            projected_survival_check_count,
+
+            projected_tree_kernel_ms,
+
+            reference_full_causal_gpu_ms,
+
+            candidate_h2d_ms:
+                h2d_ms,
+
+            candidate_kernel_total_ms:
+                kernel_total_ms,
+
+            candidate_kernel_ms,
+
+            candidate_d2h_ms:
+                d2h_ms,
+
+            candidate_wall_ms:
+                wall_ms,
+
+            candidate_ns_per_survival_check,
+
+            normal_survival_mismatches,
+
+            maxpv_survival_mismatches,
+
+            unexpected_gpu_unsupported_checks,
+        },
+    )
+}
+// SUNOPT_BLACKWELL_MAX_AFFINE_TREE_FN_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_HP_BREAKPOINTS_FN_BEGIN
+#[napi]
+pub fn run_blackwell_digital_hp_breakpoints(
+    snapshot_path: Option<String>,
+    sample_steps: Option<u32>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellDigitalHpBreakpointResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path,
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(
+                |error| {
+                    Error::from_reason(
+                        format!(
+                            "Unable to read Blackwell benchmark snapshot {}: {error}",
+                            path.display(),
+                        ),
+                    )
+                },
+            )?;
+
+    if snapshot.steps.is_empty() ||
+        snapshot.tank_count == 0
+    {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty.",
+            ),
+        );
+    }
+
+    let requested_samples =
+        sample_steps
+            .unwrap_or(192)
+            .clamp(
+                2,
+                snapshot.steps.len() as u32,
+            )
+            as usize;
+
+    let repetitions =
+        repetitions
+            .unwrap_or(20)
+            .clamp(
+                1,
+                10_000,
+            );
+
+    let selected_device =
+        device_id.unwrap_or(0);
+
+    let mut sample_positions =
+        Vec::<usize>::with_capacity(
+            requested_samples,
+        );
+
+    for sample in 0..requested_samples {
+        let position =
+            sample *
+            (snapshot.steps.len() - 1) /
+            (requested_samples - 1);
+
+        if sample_positions
+            .last()
+            .copied() !=
+            Some(position)
+        {
+            sample_positions.push(position);
+        }
+    }
+
+    let tanks =
+        (0..snapshot.tank_count)
+            .map(
+                |tank| {
+                    research_tank_from_packed(
+                        &snapshot.packed_config,
+                        tank,
+                    )
+                },
+            )
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count *
+            7,
+        );
+
+    for tank in &tanks {
+        let pmax =
+            tank.maximum_heat_pump_electrical_power;
+
+        packed_tanks.push(
+            tank.target_storage_energy,
+        );
+
+        packed_tanks.push(
+            pmax,
+        );
+
+        packed_tanks.push(
+            pmax *
+            tank.cop *
+            tank.time_step_hours,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_retention,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_intercept,
+        );
+
+        packed_tanks.push(
+            if tank.affine_supported {
+                1.0
+            } else {
+                0.0
+            },
+        );
+
+        packed_tanks.push(
+            pmax *
+            tank.time_step_hours,
+        );
+    }
+
+    let step_count =
+        sample_positions.len();
+
+    let job_count =
+        step_count *
+        snapshot.tank_count;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut horizon_steps =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut dynamic_values =
+        Vec::<f64>::with_capacity(
+            job_count *
+            3,
+        );
+
+    let mut scalar =
+        Vec::<DigitalResearchResult>::with_capacity(
+            job_count,
+        );
+
+    let mut exact_supported =
+        Vec::<bool>::with_capacity(
+            job_count,
+        );
+
+    let scalar_started =
+        Instant::now();
+
+    for &position in &sample_positions {
+        let step =
+            &snapshot.steps[position];
+
+        let horizon =
+            step.horizon_steps as usize;
+
+        if horizon == 0 ||
+            horizon > 256
+        {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Digital breakpoint benchmark supports horizon 1..=256; got {horizon}.",
+                    ),
+                ),
+            );
+        }
+
+        current_indices.push(
+            step.current_index,
+        );
+
+        horizon_steps.push(
+            step.horizon_steps,
+        );
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                horizon,
+            );
+
+        let demand_window =
+            research_window(
+                &snapshot.demand_energy,
+                step.current_index as usize,
+                horizon,
+            );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            let current_storage =
+                step.dynamic[base + 0];
+
+            let reserve =
+                step.dynamic[base + 1];
+
+            let requested =
+                step.dynamic[base + 2];
+
+            let tank =
+                tanks[tank_index];
+
+            dynamic_values.push(
+                current_storage,
+            );
+
+            dynamic_values.push(
+                reserve,
+            );
+
+            dynamic_values.push(
+                requested,
+            );
+
+            scalar.push(
+                digital_run_scalar(
+                    &export_window,
+                    &demand_window,
+                    current_storage,
+                    reserve,
+                    requested,
+                    tank,
+                ),
+            );
+
+            let clamped_reserve =
+                reserve
+                    .max(0.0)
+                    .min(
+                        tank.target_storage_energy,
+                    );
+
+            exact_supported.push(
+                tank.affine_supported &&
+                tank.heat_loss_retention >
+                    0.0 &&
+                clamped_reserve >
+                    1.0e-6,
+            );
+        }
+    }
+
+    let scalar_reference_ms =
+        scalar_started
+            .elapsed()
+            .as_secs_f64() *
+        1000.0;
+
+    let supported_jobs =
+        exact_supported
+            .iter()
+            .filter(|&&x| x)
+            .count()
+            as u32;
+
+    let unsupported_jobs =
+        job_count as u32 -
+        supported_jobs;
+
+    let iteration_limits =
+        [
+            1_u32,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+        ];
+
+    let mut variants =
+        Vec::<BlackwellDigitalHpBreakpointVariant>::new();
+
+    for search_iterations in iteration_limits {
+        let mut cuts =
+            vec![
+                0.0_f64;
+                job_count
+            ];
+
+        let mut statuses =
+            vec![
+                0_u32;
+                job_count
+            ];
+
+        let mut evaluations =
+            vec![
+                0_u32;
+                job_count
+            ];
+
+        let mut kernel_total_ms =
+            0.0_f64;
+
+        let mut wall_ms =
+            0.0_f64;
+
+        let error =
+            unsafe {
+                sunopt_cuda_run_digital_hp_breakpoints(
+                    selected_device,
+                    snapshot.export_power.as_ptr(),
+                    snapshot.demand_energy.as_ptr(),
+                    snapshot.export_power.len(),
+                    packed_tanks.as_ptr(),
+                    snapshot.tank_count,
+                    current_indices.as_ptr(),
+                    horizon_steps.as_ptr(),
+                    dynamic_values.as_ptr(),
+                    step_count,
+                    search_iterations,
+                    repetitions,
+                    cuts.as_mut_ptr(),
+                    statuses.as_mut_ptr(),
+                    evaluations.as_mut_ptr(),
+                    &mut kernel_total_ms,
+                    &mut wall_ms,
+                )
+            };
+
+        if error != 0 {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Digital HP CUDA benchmark failed with CUDA error {error} at search_iterations={search_iterations}.",
+                    ),
+                ),
+            );
+        }
+
+        let kernel_ms =
+            kernel_total_ms /
+            repetitions as f64;
+
+        let mut status_mismatches =
+            0_u32;
+
+        let mut cut_mismatches =
+            0_u32;
+
+        let mut maximum_cut_error =
+            0.0_f64;
+
+        let mut evaluation_sum =
+            0_u64;
+
+        let mut maximum_survival_evaluations =
+            0_u32;
+
+        for job in 0..job_count {
+            if !exact_supported[job] {
+                continue;
+            }
+
+            let reference =
+                scalar[job];
+
+            let expected_status =
+                if reference.normal_plan_survives {
+                    0_u32
+                } else if !reference.maximum_pv_plan_survives {
+                    1_u32
+                } else {
+                    2_u32
+                };
+
+            if statuses[job] !=
+                expected_status
+            {
+                status_mismatches +=
+                    1;
+            }
+
+            let cut_error =
+                (
+                    cuts[job] -
+                    reference.cut_level_power
+                )
+                .abs();
+
+            maximum_cut_error =
+                maximum_cut_error.max(
+                    cut_error,
+                );
+
+            if cut_error >
+                1.0e-9
+            {
+                cut_mismatches +=
+                    1;
+            }
+
+            evaluation_sum +=
+                evaluations[job]
+                    as u64;
+
+            maximum_survival_evaluations =
+                maximum_survival_evaluations.max(
+                    evaluations[job],
+                );
+        }
+
+        let average_survival_evaluations =
+            if supported_jobs >
+                0
+            {
+                evaluation_sum as f64 /
+                supported_jobs as f64
+            } else {
+                0.0
+            };
+
+        let annual_projected_kernel_ms =
+            kernel_ms *
+            snapshot.steps.len() as f64 /
+            step_count as f64;
+
+        variants.push(
+            BlackwellDigitalHpBreakpointVariant {
+                search_iterations,
+                kernel_ms,
+                wall_ms,
+                annual_projected_kernel_ms,
+                supported_jobs,
+                unsupported_jobs,
+                status_mismatches,
+                cut_mismatches,
+                maximum_cut_error,
+                average_survival_evaluations,
+                maximum_survival_evaluations,
+            },
+        );
+    }
+
+    Ok(
+        BlackwellDigitalHpBreakpointResult {
+            snapshot_path:
+                path
+                    .display()
+                    .to_string(),
+
+            device_id:
+                selected_device,
+
+            repetitions,
+
+            annual_step_count:
+                snapshot.steps.len()
+                    as u32,
+
+            sample_step_count:
+                step_count
+                    as u32,
+
+            sample_job_count:
+                job_count
+                    as u32,
+
+            supported_jobs,
+
+            unsupported_jobs,
+
+            scalar_reference_ms,
+
+            variants,
+        },
+    )
+}
+// SUNOPT_BLACKWELL_DIGITAL_HP_BREAKPOINTS_FN_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_LOCKSTEP_CANDIDATE_FN_BEGIN
+#[napi]
+pub fn run_blackwell_digital_lockstep_candidate(
+    snapshot_path:
+        Option<String>,
+
+    repetitions:
+        Option<u32>,
+
+    device_id:
+        Option<i32>,
+) -> Result<BlackwellDigitalLockstepCandidateResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path,
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(
+            &path,
+        )
+        .map_err(
+            |error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell benchmark snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            },
+        )?;
+
+    if (
+        snapshot.steps.is_empty() ||
+        snapshot.tank_count == 0 ||
+        snapshot.export_power.is_empty() ||
+        snapshot.demand_energy.len() !=
+            snapshot.export_power.len()
+    ) {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty or inconsistent.",
+            ),
+        );
+    }
+
+    if (
+        snapshot.steps.len() !=
+        snapshot.data_length
+    ) {
+        return Err(
+            Error::from_reason(
+                format!(
+                    "Expected full annual lockstep snapshot: {} steps vs data length {}.",
+                    snapshot.steps.len(),
+                    snapshot.data_length,
+                ),
+            ),
+        );
+    }
+
+    let selected_device =
+        device_id
+            .unwrap_or(0);
+
+    let repetition_count =
+        repetitions
+            .unwrap_or(1)
+            .clamp(
+                1,
+                5,
+            );
+
+    let search_iterations =
+        8_u32;
+
+    let tanks =
+        (
+            0..
+            snapshot.tank_count
+        )
+        .map(
+            |tank| {
+                research_tank_from_packed(
+                    &snapshot.packed_config,
+                    tank,
+                )
+            },
+        )
+        .collect::<Vec<_>>();
+
+    let mut packed_tanks =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count *
+            7,
+        );
+
+    for tank in
+        &tanks
+    {
+        let pmax =
+            tank.maximum_heat_pump_electrical_power;
+
+        packed_tanks.push(
+            tank.target_storage_energy,
+        );
+
+        packed_tanks.push(
+            pmax,
+        );
+
+        packed_tanks.push(
+            pmax *
+            tank.cop *
+            tank.time_step_hours,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_retention,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_intercept,
+        );
+
+        packed_tanks.push(
+            if tank.affine_supported {
+                1.0
+            } else {
+                0.0
+            },
+        );
+
+        packed_tanks.push(
+            pmax *
+            tank.time_step_hours,
+        );
+    }
+
+    let step_count =
+        snapshot.steps.len();
+
+    let tank_count =
+        snapshot.tank_count;
+
+    let job_count =
+        step_count
+            .checked_mul(
+                tank_count,
+            )
+            .ok_or_else(
+                || {
+                    Error::from_reason(
+                        "Digital lockstep candidate job count overflow.",
+                    )
+                },
+            )?;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut horizon_steps =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut dynamic_flat =
+        Vec::<f64>::with_capacity(
+            job_count *
+            3,
+        );
+
+    for step in
+        &snapshot.steps
+    {
+        if (
+            step.horizon_steps == 0 ||
+            step.horizon_steps > 256
+        ) {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Digital lockstep candidate supports horizon 1..=256; got {}.",
+                        step.horizon_steps,
+                    ),
+                ),
+            );
+        }
+
+        current_indices.push(
+            step.current_index,
+        );
+
+        horizon_steps.push(
+            step.horizon_steps,
+        );
+
+        for tank in
+            0..
+            tank_count
+        {
+            let base =
+                tank *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            dynamic_flat.push(
+                step.dynamic[
+                    base + 0
+                ],
+            );
+
+            dynamic_flat.push(
+                step.dynamic[
+                    base + 1
+                ],
+            );
+
+            dynamic_flat.push(
+                step.dynamic[
+                    base + 2
+                ],
+            );
+        }
+    }
+
+    let mut cuts =
+        vec![
+            0.0_f64;
+            job_count
+        ];
+
+    let mut statuses =
+        vec![
+            0_u32;
+            job_count
+        ];
+
+    let mut evaluations =
+        vec![
+            0_u32;
+            job_count
+        ];
+
+    let mut static_h2d_ms =
+        0.0_f64;
+
+    let mut gpu_total_ms =
+        0.0_f64;
+
+    let mut host_wait_ms =
+        0.0_f64;
+
+    let mut wall_ms =
+        0.0_f64;
+
+    let code =
+        unsafe {
+            sunopt_cuda_run_digital_lockstep_candidate(
+                selected_device,
+                snapshot.export_power
+                    .as_ptr(),
+                snapshot.demand_energy
+                    .as_ptr(),
+                snapshot.export_power
+                    .len(),
+                packed_tanks
+                    .as_ptr(),
+                tank_count,
+                current_indices
+                    .as_ptr(),
+                horizon_steps
+                    .as_ptr(),
+                dynamic_flat
+                    .as_ptr(),
+                step_count,
+                search_iterations,
+                repetition_count,
+                cuts
+                    .as_mut_ptr(),
+                statuses
+                    .as_mut_ptr(),
+                evaluations
+                    .as_mut_ptr(),
+                &mut static_h2d_ms,
+                &mut gpu_total_ms,
+                &mut host_wait_ms,
+                &mut wall_ms,
+            )
+        };
+
+    if (
+        code !=
+        0
+    ) {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_digital_lockstep_candidate",
+                code,
+            ),
+        );
+    }
+
+    let direct_gpu_total_ms =
+        gpu_total_ms /
+        repetition_count
+            as f64;
+
+    let direct_host_wait_ms =
+        host_wait_ms /
+        repetition_count
+            as f64;
+
+    let direct_wall_ms =
+        wall_ms /
+        repetition_count
+            as f64;
+
+    /*
+     * Everything now stays on the GPU. Count which jobs use the compressed
+     * max-affine branch and which use the exact serial GPU branch.
+     */
+    let gpu_statuses =
+        statuses.clone();
+
+    let gpu_cuts =
+        cuts.clone();
+
+    let mut gpu_serial_fallback_jobs =
+        0_u32;
+
+    for step in
+        &snapshot.steps
+    {
+        for tank_index in
+            0..
+            tank_count
+        {
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            let reserve =
+                step.dynamic[
+                    base + 1
+                ]
+                .max(
+                    0.0,
+                )
+                .min(
+                    tanks[
+                        tank_index
+                    ]
+                    .target_storage_energy,
+                );
+
+            let tank =
+                tanks[
+                    tank_index
+                ];
+
+            let max_affine_supported =
+                tank.affine_supported &&
+                tank.heat_loss_retention >
+                    0.0 &&
+                reserve >
+                    1.0e-6;
+
+            if (
+                !max_affine_supported
+            ) {
+                gpu_serial_fallback_jobs +=
+                    1;
+            }
+        }
+    }
+
+    let gpu_compressed_jobs =
+        job_count
+            as u32 -
+        gpu_serial_fallback_jobs;
+
+    let unexpected_unsupported_jobs =
+        statuses
+            .iter()
+            .filter(
+                |&&value| {
+                    value ==
+                    3
+                },
+            )
+            .count()
+            as u32;
+
+    if (
+        unexpected_unsupported_jobs >
+        0
+    ) {
+        return Err(
+            Error::from_reason(
+                format!(
+                    "Digital all-GPU candidate leaked {unexpected_unsupported_jobs} status=3 jobs.",
+                ),
+            ),
+        );
+    }
+
+    /*
+     * Production-shaped parity sample: verify the direct 28-block lockstep
+     * outputs against the scalar ideal-digital reference at 192 evenly spaced
+     * annual steps. This includes the serial GPU fallback jobs.
+     */
+    let parity_sample_steps =
+        192_usize.min(
+            step_count,
+        );
+
+    let mut parity_status_mismatches =
+        0_u32;
+
+    let mut parity_cut_mismatches =
+        0_u32;
+
+    let mut parity_max_cut_error =
+        0.0_f64;
+
+    for sample in
+        0..
+        parity_sample_steps
+    {
+        let step_index =
+            if (
+                parity_sample_steps <=
+                1
+            ) {
+                0
+            } else {
+                sample *
+                (
+                    step_count -
+                    1
+                ) /
+                (
+                    parity_sample_steps -
+                    1
+                )
+            };
+
+        let step =
+            &snapshot.steps[
+                step_index
+            ];
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index
+                    as usize,
+                step.horizon_steps
+                    as usize,
+            );
+
+        let demand_window =
+            research_window(
+                &snapshot.demand_energy,
+                step.current_index
+                    as usize,
+                step.horizon_steps
+                    as usize,
+            );
+
+        for tank_index in
+            0..
+            tank_count
+        {
+            let job =
+                step_index *
+                tank_count +
+                tank_index;
+
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            let reference =
+                digital_run_scalar(
+                    &export_window,
+                    &demand_window,
+                    step.dynamic[
+                        base + 0
+                    ],
+                    step.dynamic[
+                        base + 1
+                    ],
+                    step.dynamic[
+                        base + 2
+                    ],
+                    tanks[
+                        tank_index
+                    ],
+                );
+
+            let expected_status =
+                if reference
+                    .normal_plan_survives
+                {
+                    0_u32
+                } else if !reference
+                    .maximum_pv_plan_survives
+                {
+                    1_u32
+                } else {
+                    2_u32
+                };
+
+            if (
+                gpu_statuses[
+                    job
+                ] !=
+                expected_status
+            ) {
+                parity_status_mismatches +=
+                    1;
+            }
+
+            let cut_error =
+                (
+                    gpu_cuts[
+                        job
+                    ] -
+                    reference
+                        .cut_level_power
+                )
+                .abs();
+
+            parity_max_cut_error =
+                parity_max_cut_error.max(
+                    cut_error,
+                );
+
+            if (
+                cut_error >
+                1.0e-9
+            ) {
+                parity_cut_mismatches +=
+                    1;
+            }
+        }
+    }
+
+    let mut evaluation_sum =
+        0_u64;
+
+    let mut maximum_survival_evaluations =
+        0_u32;
+
+    for (
+        job,
+        &value,
+    ) in
+        evaluations
+            .iter()
+            .enumerate()
+    {
+        evaluation_sum +=
+            value
+                as u64;
+
+        maximum_survival_evaluations =
+            maximum_survival_evaluations.max(
+                value,
+            );
+    }
+
+    let average_survival_evaluations =
+        if (
+            job_count >
+            0
+        ) {
+            evaluation_sum
+                as f64 /
+            job_count
+                as f64
+        } else {
+            0.0
+        };
+
+    /* No CPU causal fallback remains. */
+    let candidate_causal_ms =
+        direct_wall_ms;
+
+    let candidate_average_us_per_job =
+        candidate_causal_ms *
+        1000.0 /
+        job_count
+            as f64;
+
+    let mut checksum =
+        1469598103934665603u64;
+
+    for value in
+        &cuts
+    {
+        blackwell_fnv1a_update(
+            &mut checksum,
+            *value,
+        );
+    }
+
+    Ok(
+        BlackwellDigitalLockstepCandidateResult {
+            snapshot_path:
+                path
+                    .display()
+                    .to_string(),
+
+            device_id:
+                selected_device,
+
+            repetitions:
+                repetition_count,
+
+            search_iterations,
+
+            annual_step_count:
+                step_count
+                    as u32,
+
+            tank_count:
+                tank_count
+                    as u32,
+
+            causal_jobs:
+                job_count
+                    as u32,
+
+            gpu_compressed_jobs,
+
+            gpu_serial_fallback_jobs,
+
+            unexpected_unsupported_jobs,
+
+            static_h2d_ms,
+
+            direct_gpu_total_ms,
+
+            direct_host_wait_ms,
+
+            direct_wall_ms,
+
+            candidate_causal_ms,
+
+            candidate_average_us_per_job,
+
+            parity_sample_steps:
+                parity_sample_steps
+                    as u32,
+
+            parity_status_mismatches,
+
+            parity_cut_mismatches,
+
+            parity_max_cut_error,
+
+            average_survival_evaluations,
+
+            maximum_survival_evaluations,
+
+            checksum_hex:
+                format!(
+                    "{checksum:016x}",
+                ),
+        },
+    )
+}
+// SUNOPT_BLACKWELL_DIGITAL_LOCKSTEP_CANDIDATE_FN_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_GRAPH_AB_FN_BEGIN
+#[napi]
+pub fn run_blackwell_digital_graph_ab(
+    snapshot_path: Option<String>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellDigitalGraphAbResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path,
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(
+            &path,
+        )
+        .map_err(
+            |error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell benchmark snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            },
+        )?;
+
+    if (
+        snapshot.steps.is_empty() ||
+        snapshot.tank_count == 0 ||
+        snapshot.export_power.is_empty() ||
+        snapshot.demand_energy.len() !=
+            snapshot.export_power.len() ||
+        snapshot.steps.len() !=
+            snapshot.data_length
+    ) {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty or not a complete annual lockstep snapshot.",
+            ),
+        );
+    }
+
+    let selected_device =
+        device_id.unwrap_or(0);
+
+    let repetition_count =
+        repetitions
+            .unwrap_or(1)
+            .clamp(1, 3);
+
+    let search_iterations =
+        8_u32;
+
+    let tanks =
+        (0..snapshot.tank_count)
+            .map(
+                |tank| {
+                    research_tank_from_packed(
+                        &snapshot.packed_config,
+                        tank,
+                    )
+                },
+            )
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count * 7,
+        );
+
+    for tank in &tanks {
+        let pmax =
+            tank.maximum_heat_pump_electrical_power;
+
+        packed_tanks.push(
+            tank.target_storage_energy,
+        );
+
+        packed_tanks.push(pmax);
+
+        packed_tanks.push(
+            pmax *
+            tank.cop *
+            tank.time_step_hours,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_retention,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_intercept,
+        );
+
+        packed_tanks.push(
+            if tank.affine_supported {
+                1.0
+            } else {
+                0.0
+            },
+        );
+
+        packed_tanks.push(
+            pmax *
+            tank.time_step_hours,
+        );
+    }
+
+    let step_count =
+        snapshot.steps.len();
+
+    let tank_count =
+        snapshot.tank_count;
+
+    let job_count =
+        step_count
+            .checked_mul(tank_count)
+            .ok_or_else(
+                || {
+                    Error::from_reason(
+                        "Digital graph A/B job count overflow.",
+                    )
+                },
+            )?;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut horizon_steps =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut dynamic_flat =
+        Vec::<f64>::with_capacity(
+            job_count * 3,
+        );
+
+    let mut gpu_serial_fallback_jobs =
+        0_u32;
+
+    for step in &snapshot.steps {
+        if (
+            step.horizon_steps == 0 ||
+            step.horizon_steps > 256
+        ) {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Digital graph A/B supports horizon 1..=256; got {}.",
+                        step.horizon_steps,
+                    ),
+                ),
+            );
+        }
+
+        current_indices.push(
+            step.current_index,
+        );
+
+        horizon_steps.push(
+            step.horizon_steps,
+        );
+
+        for tank_index in 0..tank_count {
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            let current_storage =
+                step.dynamic[base + 0];
+
+            let reserve =
+                step.dynamic[base + 1];
+
+            let requested =
+                step.dynamic[base + 2];
+
+            dynamic_flat.push(
+                current_storage,
+            );
+
+            dynamic_flat.push(
+                reserve,
+            );
+
+            dynamic_flat.push(
+                requested,
+            );
+
+            let tank =
+                tanks[tank_index];
+
+            let clamped_reserve =
+                reserve
+                    .max(0.0)
+                    .min(
+                        tank.target_storage_energy,
+                    );
+
+            let compressed =
+                tank.affine_supported &&
+                tank.heat_loss_retention >
+                    0.0 &&
+                clamped_reserve >
+                    1.0e-6;
+
+            if !compressed {
+                gpu_serial_fallback_jobs += 1;
+            }
+        }
+    }
+
+    let gpu_compressed_jobs =
+        job_count as u32 -
+        gpu_serial_fallback_jobs;
+
+    let mut direct_cuts =
+        vec![0.0_f64; job_count];
+
+    let mut direct_status =
+        vec![0_u32; job_count];
+
+    let mut direct_evaluations =
+        vec![0_u32; job_count];
+
+    let mut direct_static_h2d_ms = 0.0_f64;
+    let mut direct_gpu_total_raw_ms = 0.0_f64;
+    let mut direct_host_wait_raw_ms = 0.0_f64;
+    let mut direct_wall_raw_ms = 0.0_f64;
+
+    let direct_code =
+        unsafe {
+            sunopt_cuda_run_digital_lockstep_candidate(
+                selected_device,
+                snapshot.export_power.as_ptr(),
+                snapshot.demand_energy.as_ptr(),
+                snapshot.export_power.len(),
+                packed_tanks.as_ptr(),
+                tank_count,
+                current_indices.as_ptr(),
+                horizon_steps.as_ptr(),
+                dynamic_flat.as_ptr(),
+                step_count,
+                search_iterations,
+                repetition_count,
+                direct_cuts.as_mut_ptr(),
+                direct_status.as_mut_ptr(),
+                direct_evaluations.as_mut_ptr(),
+                &mut direct_static_h2d_ms,
+                &mut direct_gpu_total_raw_ms,
+                &mut direct_host_wait_raw_ms,
+                &mut direct_wall_raw_ms,
+            )
+        };
+
+    if direct_code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_digital_lockstep_candidate",
+                direct_code,
+            ),
+        );
+    }
+
+    let mut graph_cuts =
+        vec![0.0_f64; job_count];
+
+    let mut graph_status =
+        vec![0_u32; job_count];
+
+    let mut graph_evaluations =
+        vec![0_u32; job_count];
+
+    let mut graph_static_h2d_ms = 0.0_f64;
+    let mut graph_build_ms = 0.0_f64;
+    let mut graph_gpu_total_raw_ms = 0.0_f64;
+    let mut graph_host_wait_raw_ms = 0.0_f64;
+    let mut graph_wall_raw_ms = 0.0_f64;
+
+    let graph_code =
+        unsafe {
+            sunopt_cuda_run_digital_lockstep_graph_candidate(
+                selected_device,
+                snapshot.export_power.as_ptr(),
+                snapshot.demand_energy.as_ptr(),
+                snapshot.export_power.len(),
+                packed_tanks.as_ptr(),
+                tank_count,
+                current_indices.as_ptr(),
+                horizon_steps.as_ptr(),
+                dynamic_flat.as_ptr(),
+                step_count,
+                search_iterations,
+                repetition_count,
+                graph_cuts.as_mut_ptr(),
+                graph_status.as_mut_ptr(),
+                graph_evaluations.as_mut_ptr(),
+                &mut graph_static_h2d_ms,
+                &mut graph_build_ms,
+                &mut graph_gpu_total_raw_ms,
+                &mut graph_host_wait_raw_ms,
+                &mut graph_wall_raw_ms,
+            )
+        };
+
+    if graph_code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_digital_lockstep_graph_candidate",
+                graph_code,
+            ),
+        );
+    }
+
+    let divisor =
+        repetition_count as f64;
+
+    let direct_gpu_total_ms =
+        direct_gpu_total_raw_ms / divisor;
+
+    let direct_host_wait_ms =
+        direct_host_wait_raw_ms / divisor;
+
+    let direct_wall_ms =
+        direct_wall_raw_ms / divisor;
+
+    let graph_gpu_total_ms =
+        graph_gpu_total_raw_ms / divisor;
+
+    let graph_host_wait_ms =
+        graph_host_wait_raw_ms / divisor;
+
+    let graph_wall_ms =
+        graph_wall_raw_ms / divisor;
+
+    let wall_saving_ms =
+        direct_wall_ms -
+        graph_wall_ms;
+
+    let wall_speedup =
+        if graph_wall_ms > 0.0 {
+            direct_wall_ms /
+            graph_wall_ms
+        } else {
+            f64::INFINITY
+        };
+
+    let wall_reduction_percent =
+        if direct_wall_ms > 0.0 {
+            wall_saving_ms /
+            direct_wall_ms *
+            100.0
+        } else {
+            0.0
+        };
+
+    let mut direct_graph_status_mismatches =
+        0_u32;
+
+    let mut direct_graph_cut_mismatches =
+        0_u32;
+
+    let mut direct_graph_max_cut_error =
+        0.0_f64;
+
+    for job in 0..job_count {
+        if (
+            direct_status[job] !=
+            graph_status[job]
+        ) {
+            direct_graph_status_mismatches += 1;
+        }
+
+        let error =
+            (
+                direct_cuts[job] -
+                graph_cuts[job]
+            )
+            .abs();
+
+        direct_graph_max_cut_error =
+            direct_graph_max_cut_error.max(
+                error,
+            );
+
+        if error > 1.0e-9 {
+            direct_graph_cut_mismatches += 1;
+        }
+    }
+
+    let parity_sample_steps =
+        192_usize.min(step_count);
+
+    let mut parity_status_mismatches =
+        0_u32;
+
+    let mut parity_cut_mismatches =
+        0_u32;
+
+    let mut parity_max_cut_error =
+        0.0_f64;
+
+    for sample in 0..parity_sample_steps {
+        let step_index =
+            if parity_sample_steps <= 1 {
+                0
+            } else {
+                sample *
+                (step_count - 1) /
+                (parity_sample_steps - 1)
+            };
+
+        let step =
+            &snapshot.steps[step_index];
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        let demand_window =
+            research_window(
+                &snapshot.demand_energy,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        for tank_index in 0..tank_count {
+            let job =
+                step_index *
+                tank_count +
+                tank_index;
+
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            let reference =
+                digital_run_scalar(
+                    &export_window,
+                    &demand_window,
+                    step.dynamic[base + 0],
+                    step.dynamic[base + 1],
+                    step.dynamic[base + 2],
+                    tanks[tank_index],
+                );
+
+            let expected_status =
+                if reference.normal_plan_survives {
+                    0_u32
+                } else if !reference.maximum_pv_plan_survives {
+                    1_u32
+                } else {
+                    2_u32
+                };
+
+            if (
+                graph_status[job] !=
+                expected_status
+            ) {
+                parity_status_mismatches += 1;
+            }
+
+            let error =
+                (
+                    graph_cuts[job] -
+                    reference.cut_level_power
+                )
+                .abs();
+
+            parity_max_cut_error =
+                parity_max_cut_error.max(
+                    error,
+                );
+
+            if error > 1.0e-9 {
+                parity_cut_mismatches += 1;
+            }
+        }
+    }
+
+    let mut checksum =
+        1469598103934665603u64;
+
+    for value in &graph_cuts {
+        blackwell_fnv1a_update(
+            &mut checksum,
+            *value,
+        );
+    }
+
+    Ok(
+        BlackwellDigitalGraphAbResult {
+            snapshot_path:
+                path.display()
+                    .to_string(),
+
+            device_id:
+                selected_device,
+
+            repetitions:
+                repetition_count,
+
+            search_iterations,
+
+            annual_step_count:
+                step_count as u32,
+
+            tank_count:
+                tank_count as u32,
+
+            causal_jobs:
+                job_count as u32,
+
+            gpu_compressed_jobs,
+
+            gpu_serial_fallback_jobs,
+
+            direct_static_h2d_ms,
+            direct_gpu_total_ms,
+            direct_host_wait_ms,
+            direct_wall_ms,
+
+            graph_static_h2d_ms,
+            graph_build_ms,
+            graph_gpu_total_ms,
+            graph_host_wait_ms,
+            graph_wall_ms,
+
+            wall_saving_ms,
+            wall_speedup,
+            wall_reduction_percent,
+
+            direct_graph_status_mismatches,
+            direct_graph_cut_mismatches,
+            direct_graph_max_cut_error,
+
+            parity_sample_steps:
+                parity_sample_steps as u32,
+
+            parity_status_mismatches,
+            parity_cut_mismatches,
+            parity_max_cut_error,
+
+            checksum_hex:
+                format!(
+                    "{checksum:016x}",
+                ),
+        },
+    )
+}
+// SUNOPT_BLACKWELL_DIGITAL_GRAPH_AB_FN_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_PRESORT_AB_FN_BEGIN
+#[napi]
+pub fn run_blackwell_digital_presort_ab(
+    snapshot_path: Option<String>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellDigitalPresortAbResult> {
+    let path = snapshot_path.map(PathBuf::from).unwrap_or_else(blackwell_default_snapshot_path);
+    let snapshot = read_blackwell_snapshot(&path).map_err(|error| {
+        Error::from_reason(format!("Unable to read Blackwell snapshot {}: {error}", path.display()))
+    })?;
+
+    if snapshot.steps.is_empty() || snapshot.tank_count == 0 ||
+       snapshot.export_power.is_empty() || snapshot.steps.len() != snapshot.data_length {
+        return Err(Error::from_reason("Blackwell snapshot is not a complete annual snapshot."));
+    }
+
+    let selected_device = device_id.unwrap_or(0);
+    let repetition_count = repetitions.unwrap_or(1).clamp(1, 3);
+    let search_iterations = 8_u32;
+    let step_count = snapshot.steps.len();
+    let tank_count = snapshot.tank_count;
+    let job_count = step_count.checked_mul(tank_count).ok_or_else(|| Error::from_reason("job count overflow"))?;
+
+    let tanks = (0..tank_count)
+        .map(|tank| research_tank_from_packed(&snapshot.packed_config, tank))
+        .collect::<Vec<_>>();
+
+    let mut packed_tanks = Vec::<f64>::with_capacity(tank_count * 7);
+    for tank in &tanks {
+        let pmax = tank.maximum_heat_pump_electrical_power;
+        packed_tanks.push(tank.target_storage_energy);
+        packed_tanks.push(pmax);
+        packed_tanks.push(pmax * tank.cop * tank.time_step_hours);
+        packed_tanks.push(tank.heat_loss_retention);
+        packed_tanks.push(tank.heat_loss_intercept);
+        packed_tanks.push(if tank.affine_supported { 1.0 } else { 0.0 });
+        packed_tanks.push(pmax * tank.time_step_hours);
+    }
+
+    let mut current_indices = Vec::<u32>::with_capacity(step_count);
+    let mut horizon_steps = Vec::<u32>::with_capacity(step_count);
+    let mut dynamic_flat = Vec::<f64>::with_capacity(job_count * 3);
+
+    for step in &snapshot.steps {
+        if step.horizon_steps == 0 || step.horizon_steps > 256 {
+            return Err(Error::from_reason(format!("unsupported horizon {}", step.horizon_steps)));
+        }
+        current_indices.push(step.current_index);
+        horizon_steps.push(step.horizon_steps);
+        for tank in 0..tank_count {
+            let base = tank * BLACKWELL_DYNAMIC_STRIDE;
+            dynamic_flat.push(step.dynamic[base + 0]);
+            dynamic_flat.push(step.dynamic[base + 1]);
+            dynamic_flat.push(step.dynamic[base + 2]);
+        }
+    }
+
+    let presort_started = Instant::now();
+    let mut presorted = vec![f64::NEG_INFINITY; step_count * 256];
+
+    for (step_index, step) in snapshot.steps.iter().enumerate() {
+        let horizon = step.horizon_steps as usize;
+        let base = step_index * 256;
+        let first = base + 256 - horizon;
+        for offset in 0..horizon {
+            let index = (step.current_index as usize + offset) % snapshot.export_power.len();
+            presorted[first + offset] = snapshot.export_power[index];
+        }
+        presorted[first..base + 256].sort_by(|a, b| {
+            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
+    let presort_cpu_ms = presort_started.elapsed().as_secs_f64() * 1000.0;
+    let presorted_mib = (presorted.len() * std::mem::size_of::<f64>()) as f64 / 1048576.0;
+
+    let mut direct_cuts = vec![0.0_f64; job_count];
+    let mut direct_status = vec![0_u32; job_count];
+    let mut direct_evals = vec![0_u32; job_count];
+    let mut direct_static = 0.0_f64;
+    let mut direct_gpu_raw = 0.0_f64;
+    let mut direct_wait_raw = 0.0_f64;
+    let mut direct_wall_raw = 0.0_f64;
+
+    let code = unsafe {
+        sunopt_cuda_run_digital_lockstep_candidate(
+            selected_device,
+            snapshot.export_power.as_ptr(),
+            snapshot.demand_energy.as_ptr(),
+            snapshot.export_power.len(),
+            packed_tanks.as_ptr(),
+            tank_count,
+            current_indices.as_ptr(),
+            horizon_steps.as_ptr(),
+            dynamic_flat.as_ptr(),
+            step_count,
+            search_iterations,
+            repetition_count,
+            direct_cuts.as_mut_ptr(),
+            direct_status.as_mut_ptr(),
+            direct_evals.as_mut_ptr(),
+            &mut direct_static,
+            &mut direct_gpu_raw,
+            &mut direct_wait_raw,
+            &mut direct_wall_raw,
+        )
+    };
+    if code != 0 { return Err(cuda_error("direct digital lockstep", code)); }
+
+    let mut candidate_cuts = vec![0.0_f64; job_count];
+    let mut candidate_status = vec![0_u32; job_count];
+    let mut candidate_evals = vec![0_u32; job_count];
+    let mut candidate_static = 0.0_f64;
+    let mut presorted_h2d = 0.0_f64;
+    let mut candidate_gpu_raw = 0.0_f64;
+    let mut candidate_wait_raw = 0.0_f64;
+    let mut candidate_wall_raw = 0.0_f64;
+
+    let code = unsafe {
+        sunopt_cuda_run_digital_lockstep_presorted_candidate(
+            selected_device,
+            snapshot.export_power.as_ptr(),
+            snapshot.demand_energy.as_ptr(),
+            snapshot.export_power.len(),
+            packed_tanks.as_ptr(),
+            tank_count,
+            presorted.as_ptr(),
+            current_indices.as_ptr(),
+            horizon_steps.as_ptr(),
+            dynamic_flat.as_ptr(),
+            step_count,
+            search_iterations,
+            repetition_count,
+            candidate_cuts.as_mut_ptr(),
+            candidate_status.as_mut_ptr(),
+            candidate_evals.as_mut_ptr(),
+            &mut candidate_static,
+            &mut presorted_h2d,
+            &mut candidate_gpu_raw,
+            &mut candidate_wait_raw,
+            &mut candidate_wall_raw,
+        )
+    };
+    if code != 0 { return Err(cuda_error("presorted digital lockstep", code)); }
+
+    let divisor = repetition_count as f64;
+    let direct_gpu_total_ms = direct_gpu_raw / divisor;
+    let direct_wall_ms = direct_wall_raw / divisor;
+    let presorted_gpu_total_ms = candidate_gpu_raw / divisor;
+    let presorted_wall_ms = candidate_wall_raw / divisor;
+
+    let mut status_mismatches = 0_u32;
+    let mut cut_mismatches = 0_u32;
+    let mut maximum_cut_error = 0.0_f64;
+
+    for job in 0..job_count {
+        if direct_status[job] != candidate_status[job] { status_mismatches += 1; }
+        let error = (direct_cuts[job] - candidate_cuts[job]).abs();
+        maximum_cut_error = maximum_cut_error.max(error);
+        if error > 1.0e-9 { cut_mismatches += 1; }
+    }
+
+    let wall_saving_ms = direct_wall_ms - presorted_wall_ms;
+    let wall_speedup = if presorted_wall_ms > 0.0 { direct_wall_ms / presorted_wall_ms } else { f64::INFINITY };
+    let wall_reduction_percent = if direct_wall_ms > 0.0 { wall_saving_ms / direct_wall_ms * 100.0 } else { 0.0 };
+
+    let mut checksum = 1469598103934665603u64;
+    for value in &candidate_cuts { blackwell_fnv1a_update(&mut checksum, *value); }
+
+    Ok(BlackwellDigitalPresortAbResult {
+        snapshot_path: path.display().to_string(),
+        device_id: selected_device,
+        repetitions: repetition_count,
+        search_iterations,
+        annual_step_count: step_count as u32,
+        tank_count: tank_count as u32,
+        causal_jobs: job_count as u32,
+        presorted_values: presorted.len() as u32,
+        presorted_mib,
+        presort_cpu_ms,
+        direct_gpu_total_ms,
+        direct_wall_ms,
+        presorted_window_h2d_ms: presorted_h2d,
+        presorted_gpu_total_ms,
+        presorted_wall_ms,
+        wall_saving_ms,
+        wall_speedup,
+        wall_reduction_percent,
+        status_mismatches,
+        cut_mismatches,
+        maximum_cut_error,
+        checksum_hex: format!("{checksum:016x}"),
+    })
+}
+// SUNOPT_BLACKWELL_DIGITAL_PRESORT_AB_FN_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_WARP_TREE_AB_FN_BEGIN
+#[napi]
+pub fn run_blackwell_digital_warp_tree_ab(
+    snapshot_path: Option<String>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellDigitalWarpTreeAbResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path,
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(
+                |error| {
+                    Error::from_reason(
+                        format!(
+                            "Unable to read Blackwell benchmark snapshot {}: {error}",
+                            path.display(),
+                        ),
+                    )
+                },
+            )?;
+
+    if (
+        snapshot.steps.is_empty() ||
+        snapshot.tank_count == 0 ||
+        snapshot.export_power.is_empty() ||
+        snapshot.demand_energy.len() !=
+            snapshot.export_power.len() ||
+        snapshot.steps.len() !=
+            snapshot.data_length
+    ) {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty or not a full annual lockstep snapshot.",
+            ),
+        );
+    }
+
+    let selected_device =
+        device_id.unwrap_or(0);
+
+    let repetition_count =
+        repetitions
+            .unwrap_or(1)
+            .clamp(1, 3);
+
+    let search_iterations =
+        8_u32;
+
+    let tanks =
+        (0..snapshot.tank_count)
+            .map(
+                |tank| {
+                    research_tank_from_packed(
+                        &snapshot.packed_config,
+                        tank,
+                    )
+                },
+            )
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count * 7,
+        );
+
+    for tank in &tanks {
+        let pmax =
+            tank.maximum_heat_pump_electrical_power;
+
+        packed_tanks.push(
+            tank.target_storage_energy,
+        );
+        packed_tanks.push(pmax);
+        packed_tanks.push(
+            pmax *
+            tank.cop *
+            tank.time_step_hours,
+        );
+        packed_tanks.push(
+            tank.heat_loss_retention,
+        );
+        packed_tanks.push(
+            tank.heat_loss_intercept,
+        );
+        packed_tanks.push(
+            if tank.affine_supported {
+                1.0
+            } else {
+                0.0
+            },
+        );
+        packed_tanks.push(
+            pmax *
+            tank.time_step_hours,
+        );
+    }
+
+    let step_count =
+        snapshot.steps.len();
+
+    let tank_count =
+        snapshot.tank_count;
+
+    let job_count =
+        step_count
+            .checked_mul(tank_count)
+            .ok_or_else(
+                || {
+                    Error::from_reason(
+                        "Digital warp-tree A/B job count overflow.",
+                    )
+                },
+            )?;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut horizon_steps =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut dynamic_flat =
+        Vec::<f64>::with_capacity(
+            job_count * 3,
+        );
+
+    for step in &snapshot.steps {
+        if (
+            step.horizon_steps == 0 ||
+            step.horizon_steps > 256
+        ) {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Digital warp-tree A/B supports horizon 1..=256; got {}.",
+                        step.horizon_steps,
+                    ),
+                ),
+            );
+        }
+
+        current_indices.push(
+            step.current_index,
+        );
+
+        horizon_steps.push(
+            step.horizon_steps,
+        );
+
+        for tank_index in 0..tank_count {
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            dynamic_flat.push(
+                step.dynamic[base + 0],
+            );
+            dynamic_flat.push(
+                step.dynamic[base + 1],
+            );
+            dynamic_flat.push(
+                step.dynamic[base + 2],
+            );
+        }
+    }
+
+    let presort_started =
+        Instant::now();
+
+    let presorted_count =
+        step_count
+            .checked_mul(256)
+            .ok_or_else(
+                || {
+                    Error::from_reason(
+                        "Presorted export matrix size overflow.",
+                    )
+                },
+            )?;
+
+    let mut presorted =
+        vec![
+            f64::NEG_INFINITY;
+            presorted_count
+        ];
+
+    for (
+        step_index,
+        step,
+    ) in
+        snapshot.steps
+            .iter()
+            .enumerate()
+    {
+        let horizon =
+            step.horizon_steps as usize;
+
+        let base =
+            step_index * 256;
+
+        let first =
+            base +
+            (256 - horizon);
+
+        for offset in 0..horizon {
+            let index =
+                (
+                    step.current_index as usize +
+                    offset
+                ) %
+                snapshot.export_power.len();
+
+            presorted[
+                first + offset
+            ] =
+                snapshot.export_power[index];
+        }
+
+        presorted[
+            first..
+            base + 256
+        ]
+        .sort_by(
+            |a, b| {
+                a.partial_cmp(b)
+                    .unwrap_or(
+                        std::cmp::Ordering::Equal,
+                    )
+            },
+        );
+    }
+
+    let presort_cpu_ms =
+        presort_started
+            .elapsed()
+            .as_secs_f64() *
+        1000.0;
+
+    let presorted_mib =
+        (
+            presorted.len() *
+            std::mem::size_of::<f64>()
+        ) as f64 /
+        1048576.0;
+
+    let mut block_cuts =
+        vec![0.0_f64; job_count];
+
+    let mut block_status =
+        vec![0_u32; job_count];
+
+    let mut block_evaluations =
+        vec![0_u32; job_count];
+
+    let mut block_static_h2d_ms =
+        0.0_f64;
+
+    let mut block_presorted_h2d_ms =
+        0.0_f64;
+
+    let mut block_gpu_total_raw_ms =
+        0.0_f64;
+
+    let mut block_host_wait_raw_ms =
+        0.0_f64;
+
+    let mut block_wall_raw_ms =
+        0.0_f64;
+
+    let block_code =
+        unsafe {
+            sunopt_cuda_run_digital_lockstep_presorted_candidate(
+                selected_device,
+                snapshot.export_power.as_ptr(),
+                snapshot.demand_energy.as_ptr(),
+                snapshot.export_power.len(),
+                packed_tanks.as_ptr(),
+                tank_count,
+                presorted.as_ptr(),
+                current_indices.as_ptr(),
+                horizon_steps.as_ptr(),
+                dynamic_flat.as_ptr(),
+                step_count,
+                search_iterations,
+                repetition_count,
+                block_cuts.as_mut_ptr(),
+                block_status.as_mut_ptr(),
+                block_evaluations.as_mut_ptr(),
+                &mut block_static_h2d_ms,
+                &mut block_presorted_h2d_ms,
+                &mut block_gpu_total_raw_ms,
+                &mut block_host_wait_raw_ms,
+                &mut block_wall_raw_ms,
+            )
+        };
+
+    if block_code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_digital_lockstep_presorted_candidate",
+                block_code,
+            ),
+        );
+    }
+
+    let mut warp_cuts =
+        vec![0.0_f64; job_count];
+
+    let mut warp_status =
+        vec![0_u32; job_count];
+
+    let mut warp_evaluations =
+        vec![0_u32; job_count];
+
+    let mut warp_static_h2d_ms =
+        0.0_f64;
+
+    let mut warp_presorted_h2d_ms =
+        0.0_f64;
+
+    let mut warp_gpu_total_raw_ms =
+        0.0_f64;
+
+    let mut warp_host_wait_raw_ms =
+        0.0_f64;
+
+    let mut warp_wall_raw_ms =
+        0.0_f64;
+
+    let warp_code =
+        unsafe {
+            sunopt_cuda_run_digital_lockstep_presorted_warp_candidate(
+                selected_device,
+                snapshot.export_power.as_ptr(),
+                snapshot.demand_energy.as_ptr(),
+                snapshot.export_power.len(),
+                packed_tanks.as_ptr(),
+                tank_count,
+                presorted.as_ptr(),
+                current_indices.as_ptr(),
+                horizon_steps.as_ptr(),
+                dynamic_flat.as_ptr(),
+                step_count,
+                search_iterations,
+                repetition_count,
+                warp_cuts.as_mut_ptr(),
+                warp_status.as_mut_ptr(),
+                warp_evaluations.as_mut_ptr(),
+                &mut warp_static_h2d_ms,
+                &mut warp_presorted_h2d_ms,
+                &mut warp_gpu_total_raw_ms,
+                &mut warp_host_wait_raw_ms,
+                &mut warp_wall_raw_ms,
+            )
+        };
+
+    if warp_code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_digital_lockstep_presorted_warp_candidate",
+                warp_code,
+            ),
+        );
+    }
+
+    let divisor =
+        repetition_count as f64;
+
+    let block_tree_gpu_total_ms =
+        block_gpu_total_raw_ms /
+        divisor;
+
+    let block_tree_wall_ms =
+        block_wall_raw_ms /
+        divisor;
+
+    let warp_tree_gpu_total_ms =
+        warp_gpu_total_raw_ms /
+        divisor;
+
+    let warp_tree_wall_ms =
+        warp_wall_raw_ms /
+        divisor;
+
+    let wall_saving_ms =
+        block_tree_wall_ms -
+        warp_tree_wall_ms;
+
+    let wall_speedup =
+        if warp_tree_wall_ms > 0.0 {
+            block_tree_wall_ms /
+            warp_tree_wall_ms
+        } else {
+            f64::INFINITY
+        };
+
+    let wall_reduction_percent =
+        if block_tree_wall_ms > 0.0 {
+            wall_saving_ms /
+            block_tree_wall_ms *
+            100.0
+        } else {
+            0.0
+        };
+
+    let mut block_warp_status_mismatches =
+        0_u32;
+
+    let mut block_warp_cut_mismatches =
+        0_u32;
+
+    let mut block_warp_max_cut_error =
+        0.0_f64;
+
+    let mut evaluation_mismatches =
+        0_u32;
+
+    for job in 0..job_count {
+        if (
+            block_status[job] !=
+            warp_status[job]
+        ) {
+            block_warp_status_mismatches +=
+                1;
+        }
+
+        if (
+            block_evaluations[job] !=
+            warp_evaluations[job]
+        ) {
+            evaluation_mismatches +=
+                1;
+        }
+
+        let error =
+            (
+                block_cuts[job] -
+                warp_cuts[job]
+            )
+            .abs();
+
+        block_warp_max_cut_error =
+            block_warp_max_cut_error.max(
+                error,
+            );
+
+        if error > 1.0e-9 {
+            block_warp_cut_mismatches +=
+                1;
+        }
+    }
+
+    let parity_sample_steps =
+        192_usize.min(step_count);
+
+    let mut parity_status_mismatches =
+        0_u32;
+
+    let mut parity_cut_mismatches =
+        0_u32;
+
+    let mut parity_max_cut_error =
+        0.0_f64;
+
+    for sample in 0..parity_sample_steps {
+        let step_index =
+            if parity_sample_steps <= 1 {
+                0
+            } else {
+                sample *
+                (step_count - 1) /
+                (parity_sample_steps - 1)
+            };
+
+        let step =
+            &snapshot.steps[step_index];
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        let demand_window =
+            research_window(
+                &snapshot.demand_energy,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        for tank_index in 0..tank_count {
+            let job =
+                step_index *
+                tank_count +
+                tank_index;
+
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            let reference =
+                digital_run_scalar(
+                    &export_window,
+                    &demand_window,
+                    step.dynamic[base + 0],
+                    step.dynamic[base + 1],
+                    step.dynamic[base + 2],
+                    tanks[tank_index],
+                );
+
+            let expected_status =
+                if reference.normal_plan_survives {
+                    0_u32
+                } else if !reference.maximum_pv_plan_survives {
+                    1_u32
+                } else {
+                    2_u32
+                };
+
+            if (
+                warp_status[job] !=
+                expected_status
+            ) {
+                parity_status_mismatches +=
+                    1;
+            }
+
+            let error =
+                (
+                    warp_cuts[job] -
+                    reference.cut_level_power
+                )
+                .abs();
+
+            parity_max_cut_error =
+                parity_max_cut_error.max(
+                    error,
+                );
+
+            if error > 1.0e-9 {
+                parity_cut_mismatches +=
+                    1;
+            }
+        }
+    }
+
+    let mut checksum =
+        1469598103934665603u64;
+
+    for value in &warp_cuts {
+        blackwell_fnv1a_update(
+            &mut checksum,
+            *value,
+        );
+    }
+
+    Ok(
+        BlackwellDigitalWarpTreeAbResult {
+            snapshot_path:
+                path.display()
+                    .to_string(),
+
+            device_id:
+                selected_device,
+
+            repetitions:
+                repetition_count,
+
+            search_iterations,
+
+            annual_step_count:
+                step_count as u32,
+
+            tank_count:
+                tank_count as u32,
+
+            causal_jobs:
+                job_count as u32,
+
+            presorted_mib,
+            presort_cpu_ms,
+
+            block_tree_gpu_total_ms,
+            block_tree_wall_ms,
+
+            warp_tree_gpu_total_ms,
+            warp_tree_wall_ms,
+
+            wall_saving_ms,
+            wall_speedup,
+            wall_reduction_percent,
+
+            block_warp_status_mismatches,
+            block_warp_cut_mismatches,
+            block_warp_max_cut_error,
+            evaluation_mismatches,
+
+            parity_sample_steps:
+                parity_sample_steps as u32,
+
+            parity_status_mismatches,
+            parity_cut_mismatches,
+            parity_max_cut_error,
+
+            checksum_hex:
+                format!(
+                    "{checksum:016x}",
+                ),
+        },
+    )
+}
+// SUNOPT_BLACKWELL_DIGITAL_WARP_TREE_AB_FN_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_PIECEWISE_ZERO_AB_FN_BEGIN
+#[napi]
+pub fn run_blackwell_digital_piecewise_zero_ab(
+    snapshot_path: Option<String>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellDigitalPiecewiseZeroAbResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path,
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(
+                |error| {
+                    Error::from_reason(
+                        format!(
+                            "Unable to read Blackwell benchmark snapshot {}: {error}",
+                            path.display(),
+                        ),
+                    )
+                },
+            )?;
+
+    if (
+        snapshot.steps.is_empty() ||
+        snapshot.tank_count == 0 ||
+        snapshot.export_power.is_empty() ||
+        snapshot.demand_energy.len() !=
+            snapshot.export_power.len() ||
+        snapshot.steps.len() !=
+            snapshot.data_length
+    ) {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty or not a full annual lockstep snapshot.",
+            ),
+        );
+    }
+
+    let selected_device =
+        device_id.unwrap_or(0);
+
+    let repetition_count =
+        repetitions
+            .unwrap_or(1)
+            .clamp(1, 3);
+
+    let search_iterations =
+        8_u32;
+
+    let tanks =
+        (0..snapshot.tank_count)
+            .map(
+                |tank| {
+                    research_tank_from_packed(
+                        &snapshot.packed_config,
+                        tank,
+                    )
+                },
+            )
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count * 7,
+        );
+
+    for tank in &tanks {
+        let pmax =
+            tank.maximum_heat_pump_electrical_power;
+
+        packed_tanks.push(
+            tank.target_storage_energy,
+        );
+
+        packed_tanks.push(pmax);
+
+        packed_tanks.push(
+            pmax *
+            tank.cop *
+            tank.time_step_hours,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_retention,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_intercept,
+        );
+
+        packed_tanks.push(
+            if tank.affine_supported {
+                1.0
+            } else {
+                0.0
+            },
+        );
+
+        packed_tanks.push(
+            pmax *
+            tank.time_step_hours,
+        );
+    }
+
+    let step_count =
+        snapshot.steps.len();
+
+    let tank_count =
+        snapshot.tank_count;
+
+    let job_count =
+        step_count
+            .checked_mul(tank_count)
+            .ok_or_else(
+                || {
+                    Error::from_reason(
+                        "Piecewise-zero A/B job count overflow.",
+                    )
+                },
+            )?;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut horizon_steps =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut dynamic_flat =
+        Vec::<f64>::with_capacity(
+            job_count * 3,
+        );
+
+    let mut legacy_serial_fallback_jobs =
+        0_u32;
+
+    let mut piecewise_serial_fallback_jobs =
+        0_u32;
+
+    for step in &snapshot.steps {
+        if (
+            step.horizon_steps == 0 ||
+            step.horizon_steps > 256
+        ) {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Piecewise-zero A/B supports horizon 1..=256; got {}.",
+                        step.horizon_steps,
+                    ),
+                ),
+            );
+        }
+
+        current_indices.push(
+            step.current_index,
+        );
+
+        horizon_steps.push(
+            step.horizon_steps,
+        );
+
+        for tank_index in 0..tank_count {
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            let reserve =
+                step.dynamic[
+                    base + 1
+                ]
+                .max(0.0)
+                .min(
+                    tanks[
+                        tank_index
+                    ]
+                    .target_storage_energy,
+                );
+
+            dynamic_flat.push(
+                step.dynamic[base + 0],
+            );
+
+            dynamic_flat.push(
+                reserve,
+            );
+
+            dynamic_flat.push(
+                step.dynamic[base + 2],
+            );
+
+            let tank =
+                tanks[tank_index];
+
+            let legacy_supported =
+                tank.affine_supported &&
+                tank.heat_loss_retention >
+                    0.0 &&
+                reserve >
+                    1.0e-6;
+
+            let piecewise_supported =
+                tank.affine_supported &&
+                tank.heat_loss_retention >
+                    0.0;
+
+            if !legacy_supported {
+                legacy_serial_fallback_jobs +=
+                    1;
+            }
+
+            if !piecewise_supported {
+                piecewise_serial_fallback_jobs +=
+                    1;
+            }
+        }
+    }
+
+    let legacy_compressed_jobs =
+        job_count as u32 -
+        legacy_serial_fallback_jobs;
+
+    let piecewise_compressed_jobs =
+        job_count as u32 -
+        piecewise_serial_fallback_jobs;
+
+    let presorted_count =
+        step_count
+            .checked_mul(256)
+            .ok_or_else(
+                || {
+                    Error::from_reason(
+                        "Presorted export matrix size overflow.",
+                    )
+                },
+            )?;
+
+    let mut presorted =
+        vec![
+            f64::NEG_INFINITY;
+            presorted_count
+        ];
+
+    for (
+        step_index,
+        step,
+    ) in
+        snapshot.steps
+            .iter()
+            .enumerate()
+    {
+        let horizon =
+            step.horizon_steps as usize;
+
+        let base =
+            step_index * 256;
+
+        let first =
+            base +
+            (256 - horizon);
+
+        for offset in 0..horizon {
+            let index =
+                (
+                    step.current_index as usize +
+                    offset
+                ) %
+                snapshot.export_power.len();
+
+            presorted[
+                first + offset
+            ] =
+                snapshot.export_power[index];
+        }
+
+        presorted[
+            first..
+            base + 256
+        ]
+        .sort_by(
+            |a, b| {
+                a.partial_cmp(b)
+                    .unwrap_or(
+                        std::cmp::Ordering::Equal,
+                    )
+            },
+        );
+    }
+
+    let mut legacy_cuts =
+        vec![0.0_f64; job_count];
+
+    let mut legacy_status =
+        vec![0_u32; job_count];
+
+    let mut legacy_evaluations =
+        vec![0_u32; job_count];
+
+    let mut legacy_static_h2d_ms =
+        0.0_f64;
+
+    let mut legacy_presorted_h2d_ms =
+        0.0_f64;
+
+    let mut legacy_gpu_total_raw_ms =
+        0.0_f64;
+
+    let mut legacy_host_wait_raw_ms =
+        0.0_f64;
+
+    let mut legacy_wall_raw_ms =
+        0.0_f64;
+
+    let legacy_code =
+        unsafe {
+            sunopt_cuda_run_digital_lockstep_presorted_warp_candidate(
+                selected_device,
+                snapshot.export_power.as_ptr(),
+                snapshot.demand_energy.as_ptr(),
+                snapshot.export_power.len(),
+                packed_tanks.as_ptr(),
+                tank_count,
+                presorted.as_ptr(),
+                current_indices.as_ptr(),
+                horizon_steps.as_ptr(),
+                dynamic_flat.as_ptr(),
+                step_count,
+                search_iterations,
+                repetition_count,
+                legacy_cuts.as_mut_ptr(),
+                legacy_status.as_mut_ptr(),
+                legacy_evaluations.as_mut_ptr(),
+                &mut legacy_static_h2d_ms,
+                &mut legacy_presorted_h2d_ms,
+                &mut legacy_gpu_total_raw_ms,
+                &mut legacy_host_wait_raw_ms,
+                &mut legacy_wall_raw_ms,
+            )
+        };
+
+    if legacy_code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_digital_lockstep_presorted_warp_candidate",
+                legacy_code,
+            ),
+        );
+    }
+
+    let mut piecewise_cuts =
+        vec![0.0_f64; job_count];
+
+    let mut piecewise_status =
+        vec![0_u32; job_count];
+
+    let mut piecewise_evaluations =
+        vec![0_u32; job_count];
+
+    let mut piecewise_static_h2d_ms =
+        0.0_f64;
+
+    let mut piecewise_presorted_h2d_ms =
+        0.0_f64;
+
+    let mut piecewise_gpu_total_raw_ms =
+        0.0_f64;
+
+    let mut piecewise_host_wait_raw_ms =
+        0.0_f64;
+
+    let mut piecewise_wall_raw_ms =
+        0.0_f64;
+
+    let piecewise_code =
+        unsafe {
+            sunopt_cuda_run_digital_lockstep_piecewise_zero_candidate(
+                selected_device,
+                snapshot.export_power.as_ptr(),
+                snapshot.demand_energy.as_ptr(),
+                snapshot.export_power.len(),
+                packed_tanks.as_ptr(),
+                tank_count,
+                presorted.as_ptr(),
+                current_indices.as_ptr(),
+                horizon_steps.as_ptr(),
+                dynamic_flat.as_ptr(),
+                step_count,
+                search_iterations,
+                repetition_count,
+                piecewise_cuts.as_mut_ptr(),
+                piecewise_status.as_mut_ptr(),
+                piecewise_evaluations.as_mut_ptr(),
+                &mut piecewise_static_h2d_ms,
+                &mut piecewise_presorted_h2d_ms,
+                &mut piecewise_gpu_total_raw_ms,
+                &mut piecewise_host_wait_raw_ms,
+                &mut piecewise_wall_raw_ms,
+            )
+        };
+
+    if piecewise_code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_digital_lockstep_piecewise_zero_candidate",
+                piecewise_code,
+            ),
+        );
+    }
+
+    let divisor =
+        repetition_count as f64;
+
+    let legacy_gpu_total_ms =
+        legacy_gpu_total_raw_ms /
+        divisor;
+
+    let legacy_wall_ms =
+        legacy_wall_raw_ms /
+        divisor;
+
+    let piecewise_gpu_total_ms =
+        piecewise_gpu_total_raw_ms /
+        divisor;
+
+    let piecewise_wall_ms =
+        piecewise_wall_raw_ms /
+        divisor;
+
+    let wall_saving_ms =
+        legacy_wall_ms -
+        piecewise_wall_ms;
+
+    let wall_speedup =
+        if piecewise_wall_ms > 0.0 {
+            legacy_wall_ms /
+            piecewise_wall_ms
+        } else {
+            f64::INFINITY
+        };
+
+    let wall_reduction_percent =
+        if legacy_wall_ms > 0.0 {
+            wall_saving_ms /
+            legacy_wall_ms *
+            100.0
+        } else {
+            0.0
+        };
+
+    let mut legacy_piecewise_status_mismatches =
+        0_u32;
+
+    let mut legacy_piecewise_cut_mismatches =
+        0_u32;
+
+    let mut legacy_piecewise_max_cut_error =
+        0.0_f64;
+
+    let mut evaluation_mismatches =
+        0_u32;
+
+    for job in 0..job_count {
+        if (
+            legacy_status[job] !=
+            piecewise_status[job]
+        ) {
+            legacy_piecewise_status_mismatches +=
+                1;
+        }
+
+        if (
+            legacy_evaluations[job] !=
+            piecewise_evaluations[job]
+        ) {
+            evaluation_mismatches +=
+                1;
+        }
+
+        let error =
+            (
+                legacy_cuts[job] -
+                piecewise_cuts[job]
+            )
+            .abs();
+
+        legacy_piecewise_max_cut_error =
+            legacy_piecewise_max_cut_error.max(
+                error,
+            );
+
+        if error > 1.0e-9 {
+            legacy_piecewise_cut_mismatches +=
+                1;
+        }
+    }
+
+    let parity_sample_steps =
+        192_usize.min(step_count);
+
+    let mut parity_status_mismatches =
+        0_u32;
+
+    let mut parity_cut_mismatches =
+        0_u32;
+
+    let mut parity_max_cut_error =
+        0.0_f64;
+
+    for sample in 0..parity_sample_steps {
+        let step_index =
+            if parity_sample_steps <= 1 {
+                0
+            } else {
+                sample *
+                (step_count - 1) /
+                (parity_sample_steps - 1)
+            };
+
+        let step =
+            &snapshot.steps[step_index];
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        let demand_window =
+            research_window(
+                &snapshot.demand_energy,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        for tank_index in 0..tank_count {
+            let job =
+                step_index *
+                tank_count +
+                tank_index;
+
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            let reference =
+                digital_run_scalar(
+                    &export_window,
+                    &demand_window,
+                    step.dynamic[base + 0],
+                    step.dynamic[base + 1],
+                    step.dynamic[base + 2],
+                    tanks[tank_index],
+                );
+
+            let expected_status =
+                if reference.normal_plan_survives {
+                    0_u32
+                } else if !reference.maximum_pv_plan_survives {
+                    1_u32
+                } else {
+                    2_u32
+                };
+
+            if (
+                piecewise_status[job] !=
+                expected_status
+            ) {
+                parity_status_mismatches +=
+                    1;
+            }
+
+            let error =
+                (
+                    piecewise_cuts[job] -
+                    reference.cut_level_power
+                )
+                .abs();
+
+            parity_max_cut_error =
+                parity_max_cut_error.max(
+                    error,
+                );
+
+            if error > 1.0e-9 {
+                parity_cut_mismatches +=
+                    1;
+            }
+        }
+    }
+
+    let mut checksum =
+        1469598103934665603u64;
+
+    for value in &piecewise_cuts {
+        blackwell_fnv1a_update(
+            &mut checksum,
+            *value,
+        );
+    }
+
+    Ok(
+        BlackwellDigitalPiecewiseZeroAbResult {
+            snapshot_path:
+                path.display()
+                    .to_string(),
+
+            device_id:
+                selected_device,
+
+            repetitions:
+                repetition_count,
+
+            search_iterations,
+
+            annual_step_count:
+                step_count as u32,
+
+            tank_count:
+                tank_count as u32,
+
+            causal_jobs:
+                job_count as u32,
+
+            legacy_compressed_jobs,
+            legacy_serial_fallback_jobs,
+            piecewise_compressed_jobs,
+            piecewise_serial_fallback_jobs,
+
+            legacy_gpu_total_ms,
+            legacy_wall_ms,
+
+            piecewise_gpu_total_ms,
+            piecewise_wall_ms,
+
+            wall_saving_ms,
+            wall_speedup,
+            wall_reduction_percent,
+
+            legacy_piecewise_status_mismatches,
+            legacy_piecewise_cut_mismatches,
+            legacy_piecewise_max_cut_error,
+            evaluation_mismatches,
+
+            parity_sample_steps:
+                parity_sample_steps as u32,
+
+            parity_status_mismatches,
+            parity_cut_mismatches,
+            parity_max_cut_error,
+
+            checksum_hex:
+                format!(
+                    "{checksum:016x}",
+                ),
+        },
+    )
+}
+// SUNOPT_BLACKWELL_DIGITAL_PIECEWISE_ZERO_AB_FN_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_RESIDENT_CHUNK_FN_BEGIN
+#[napi]
+pub fn run_blackwell_digital_resident_chunk(
+    snapshot_path: Option<String>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellDigitalResidentChunkResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path,
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(
+                |error| {
+                    Error::from_reason(
+                        format!(
+                            "Unable to read Blackwell benchmark snapshot {}: {error}",
+                            path.display(),
+                        ),
+                    )
+                },
+            )?;
+
+    if (
+        snapshot.steps.is_empty() ||
+        snapshot.tank_count == 0 ||
+        snapshot.export_power.is_empty() ||
+        snapshot.demand_energy.len() != snapshot.export_power.len() ||
+        snapshot.steps.len() != snapshot.data_length
+    ) {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty or not a full annual lockstep snapshot.",
+            ),
+        );
+    }
+
+    let selected_device = device_id.unwrap_or(0);
+    let repetition_count = repetitions.unwrap_or(1).clamp(1, 3);
+    let search_iterations = 8_u32;
+
+    let tanks =
+        (0..snapshot.tank_count)
+            .map(
+                |tank| {
+                    research_tank_from_packed(
+                        &snapshot.packed_config,
+                        tank,
+                    )
+                },
+            )
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count * 7,
+        );
+
+    for tank in &tanks {
+        let pmax =
+            tank.maximum_heat_pump_electrical_power;
+
+        packed_tanks.push(tank.target_storage_energy);
+        packed_tanks.push(pmax);
+        packed_tanks.push(
+            pmax * tank.cop * tank.time_step_hours,
+        );
+        packed_tanks.push(tank.heat_loss_retention);
+        packed_tanks.push(tank.heat_loss_intercept);
+        packed_tanks.push(
+            if tank.affine_supported { 1.0 } else { 0.0 },
+        );
+        packed_tanks.push(
+            pmax * tank.time_step_hours,
+        );
+    }
+
+    let step_count = snapshot.steps.len();
+    let tank_count = snapshot.tank_count;
+    let job_count =
+        step_count
+            .checked_mul(tank_count)
+            .ok_or_else(
+                || Error::from_reason(
+                    "Resident-chunk job count overflow.",
+                ),
+            )?;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(step_count);
+    let mut horizon_steps =
+        Vec::<u32>::with_capacity(step_count);
+    let mut dynamic_flat =
+        Vec::<f64>::with_capacity(job_count * 3);
+
+    for step in &snapshot.steps {
+        if (
+            step.horizon_steps == 0 ||
+            step.horizon_steps > 256
+        ) {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Resident-chunk benchmark supports horizon 1..=256; got {}.",
+                        step.horizon_steps,
+                    ),
+                ),
+            );
+        }
+
+        current_indices.push(step.current_index);
+        horizon_steps.push(step.horizon_steps);
+
+        for tank_index in 0..tank_count {
+            let base =
+                tank_index * BLACKWELL_DYNAMIC_STRIDE;
+
+            dynamic_flat.push(step.dynamic[base + 0]);
+            dynamic_flat.push(step.dynamic[base + 1]);
+            dynamic_flat.push(step.dynamic[base + 2]);
+        }
+    }
+
+    let presorted_count =
+        step_count
+            .checked_mul(256)
+            .ok_or_else(
+                || Error::from_reason(
+                    "Presorted export matrix size overflow.",
+                ),
+            )?;
+
+    let mut presorted =
+        vec![f64::NEG_INFINITY; presorted_count];
+
+    for (step_index, step) in snapshot.steps.iter().enumerate() {
+        let horizon = step.horizon_steps as usize;
+        let base = step_index * 256;
+        let first = base + (256 - horizon);
+
+        for offset in 0..horizon {
+            let index =
+                (step.current_index as usize + offset) %
+                snapshot.export_power.len();
+
+            presorted[first + offset] =
+                snapshot.export_power[index];
+        }
+
+        presorted[first..base + 256]
+            .sort_by(
+                |a, b| {
+                    a.partial_cmp(b)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                },
+            );
+    }
+
+    let presorted_mib =
+        (
+            presorted.len() * std::mem::size_of::<f64>()
+        ) as f64 /
+        1048576.0;
+
+    let mut reference_cuts = vec![0.0_f64; job_count];
+    let mut reference_status = vec![0_u32; job_count];
+    let mut reference_evaluations = vec![0_u32; job_count];
+
+    let mut ref_static_h2d_ms = 0.0_f64;
+    let mut ref_presorted_h2d_ms = 0.0_f64;
+    let mut ref_gpu_total_raw_ms = 0.0_f64;
+    let mut ref_host_wait_raw_ms = 0.0_f64;
+    let mut ref_wall_raw_ms = 0.0_f64;
+
+    let reference_code =
+        unsafe {
+            sunopt_cuda_run_digital_lockstep_presorted_warp_candidate(
+                selected_device,
+                snapshot.export_power.as_ptr(),
+                snapshot.demand_energy.as_ptr(),
+                snapshot.export_power.len(),
+                packed_tanks.as_ptr(),
+                tank_count,
+                presorted.as_ptr(),
+                current_indices.as_ptr(),
+                horizon_steps.as_ptr(),
+                dynamic_flat.as_ptr(),
+                step_count,
+                search_iterations,
+                repetition_count,
+                reference_cuts.as_mut_ptr(),
+                reference_status.as_mut_ptr(),
+                reference_evaluations.as_mut_ptr(),
+                &mut ref_static_h2d_ms,
+                &mut ref_presorted_h2d_ms,
+                &mut ref_gpu_total_raw_ms,
+                &mut ref_host_wait_raw_ms,
+                &mut ref_wall_raw_ms,
+            )
+        };
+
+    if reference_code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_digital_lockstep_presorted_warp_candidate",
+                reference_code,
+            ),
+        );
+    }
+
+    let divisor = repetition_count as f64;
+    let lockstep_gpu_total_ms = ref_gpu_total_raw_ms / divisor;
+    let lockstep_wall_ms = ref_wall_raw_ms / divisor;
+
+    let mut reference_checksum = 1469598103934665603u64;
+    for value in &reference_cuts {
+        blackwell_fnv1a_update(&mut reference_checksum, *value);
+    }
+
+    let chunk_sizes: [u32; 7] =
+        [1, 4, 16, 64, 256, 1024, 4096];
+
+    let mut variants =
+        Vec::<BlackwellDigitalResidentChunkVariant>::with_capacity(
+            chunk_sizes.len(),
+        );
+
+    for chunk_steps in chunk_sizes {
+        let mut cuts = vec![0.0_f64; job_count];
+        let mut status = vec![0_u32; job_count];
+        let mut evaluations = vec![0_u32; job_count];
+
+        let mut input_h2d_ms = 0.0_f64;
+        let mut kernel_ms = 0.0_f64;
+        let mut result_d2h_ms = 0.0_f64;
+        let mut wall_ms = 0.0_f64;
+
+        let code =
+            unsafe {
+                sunopt_cuda_run_digital_resident_chunk_replay(
+                    selected_device,
+                    snapshot.export_power.as_ptr(),
+                    snapshot.demand_energy.as_ptr(),
+                    snapshot.export_power.len(),
+                    packed_tanks.as_ptr(),
+                    tank_count,
+                    presorted.as_ptr(),
+                    current_indices.as_ptr(),
+                    horizon_steps.as_ptr(),
+                    dynamic_flat.as_ptr(),
+                    step_count,
+                    search_iterations,
+                    chunk_steps,
+                    repetition_count,
+                    cuts.as_mut_ptr(),
+                    status.as_mut_ptr(),
+                    evaluations.as_mut_ptr(),
+                    &mut input_h2d_ms,
+                    &mut kernel_ms,
+                    &mut result_d2h_ms,
+                    &mut wall_ms,
+                )
+            };
+
+        if code != 0 {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_run_digital_resident_chunk_replay",
+                    code,
+                ),
+            );
+        }
+
+        let mut status_mismatches = 0_u32;
+        let mut cut_mismatches = 0_u32;
+        let mut maximum_cut_error = 0.0_f64;
+        let mut evaluation_mismatches = 0_u32;
+
+        for job in 0..job_count {
+            if status[job] != reference_status[job] {
+                status_mismatches += 1;
+            }
+
+            if evaluations[job] != reference_evaluations[job] {
+                evaluation_mismatches += 1;
+            }
+
+            let error =
+                (cuts[job] - reference_cuts[job]).abs();
+
+            maximum_cut_error =
+                maximum_cut_error.max(error);
+
+            if error > 1.0e-9 {
+                cut_mismatches += 1;
+            }
+        }
+
+        let mut checksum = 1469598103934665603u64;
+        for value in &cuts {
+            blackwell_fnv1a_update(&mut checksum, *value);
+        }
+
+        let speedup_vs_lockstep =
+            if wall_ms > 0.0 {
+                lockstep_wall_ms / wall_ms
+            } else {
+                f64::INFINITY
+            };
+
+        let reduction_vs_lockstep_percent =
+            if lockstep_wall_ms > 0.0 {
+                (lockstep_wall_ms - wall_ms) /
+                    lockstep_wall_ms *
+                    100.0
+            } else {
+                0.0
+            };
+
+        let launches_per_year =
+            (
+                (step_count as u64 + chunk_steps as u64 - 1) /
+                chunk_steps as u64
+            ) as u32;
+
+        variants.push(
+            BlackwellDigitalResidentChunkVariant {
+                chunk_steps,
+                launches_per_year,
+                input_h2d_ms,
+                kernel_ms,
+                result_d2h_ms,
+                wall_ms,
+                speedup_vs_lockstep,
+                reduction_vs_lockstep_percent,
+                status_mismatches,
+                cut_mismatches,
+                maximum_cut_error,
+                evaluation_mismatches,
+                checksum_hex: format!("{checksum:016x}"),
+            },
+        );
+    }
+
+    Ok(
+        BlackwellDigitalResidentChunkResult {
+            snapshot_path: path.display().to_string(),
+            device_id: selected_device,
+            repetitions: repetition_count,
+            search_iterations,
+            annual_step_count: step_count as u32,
+            tank_count: tank_count as u32,
+            causal_jobs: job_count as u32,
+            presorted_mib,
+            lockstep_gpu_total_ms,
+            lockstep_wall_ms,
+            lockstep_checksum_hex:
+                format!("{reference_checksum:016x}"),
+            variants,
+        },
+    )
+}
+// SUNOPT_BLACKWELL_DIGITAL_RESIDENT_CHUNK_FN_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_RESIDENT_JOB_BATCH_FN_BEGIN
+#[napi]
+pub fn run_blackwell_digital_resident_job_batch(
+    snapshot_path: Option<String>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellDigitalResidentJobBatchResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path,
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(
+            &path,
+        )
+        .map_err(
+            |error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell benchmark snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            },
+        )?;
+
+    if (
+        snapshot.steps.is_empty() ||
+        snapshot.tank_count == 0 ||
+        snapshot.export_power.is_empty() ||
+        snapshot.demand_energy.len() !=
+            snapshot.export_power.len() ||
+        snapshot.steps.len() !=
+            snapshot.data_length
+    ) {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty or not a full annual lockstep snapshot.",
+            ),
+        );
+    }
+
+    let selected_device =
+        device_id.unwrap_or(0);
+
+    let repetition_count =
+        repetitions
+            .unwrap_or(1)
+            .clamp(
+                1,
+                3,
+            );
+
+    let search_iterations =
+        8_u32;
+
+    let tanks =
+        (
+            0..
+            snapshot.tank_count
+        )
+        .map(
+            |tank| {
+                research_tank_from_packed(
+                    &snapshot.packed_config,
+                    tank,
+                )
+            },
+        )
+        .collect::<Vec<_>>();
+
+    let mut packed_tanks =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count *
+            7,
+        );
+
+    for tank in
+        &tanks
+    {
+        let pmax =
+            tank.maximum_heat_pump_electrical_power;
+
+        packed_tanks.push(
+            tank.target_storage_energy,
+        );
+
+        packed_tanks.push(
+            pmax,
+        );
+
+        packed_tanks.push(
+            pmax *
+            tank.cop *
+            tank.time_step_hours,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_retention,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_intercept,
+        );
+
+        packed_tanks.push(
+            if tank.affine_supported {
+                1.0
+            } else {
+                0.0
+            },
+        );
+
+        packed_tanks.push(
+            pmax *
+            tank.time_step_hours,
+        );
+    }
+
+    let step_count =
+        snapshot.steps.len();
+
+    let tank_count =
+        snapshot.tank_count;
+
+    let job_count =
+        step_count
+            .checked_mul(
+                tank_count,
+            )
+            .ok_or_else(
+                || {
+                    Error::from_reason(
+                        "Resident-job-batch job count overflow.",
+                    )
+                },
+            )?;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut horizon_steps =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut dynamic_flat =
+        Vec::<f64>::with_capacity(
+            job_count *
+            3,
+        );
+
+    for step in
+        &snapshot.steps
+    {
+        if (
+            step.horizon_steps ==
+                0 ||
+            step.horizon_steps >
+                256
+        ) {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Resident-job-batch supports horizon 1..=256; got {}.",
+                        step.horizon_steps,
+                    ),
+                ),
+            );
+        }
+
+        current_indices.push(
+            step.current_index,
+        );
+
+        horizon_steps.push(
+            step.horizon_steps,
+        );
+
+        for tank_index in
+            0..
+            tank_count
+        {
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            dynamic_flat.push(
+                step.dynamic[
+                    base + 0
+                ],
+            );
+
+            dynamic_flat.push(
+                step.dynamic[
+                    base + 1
+                ],
+            );
+
+            dynamic_flat.push(
+                step.dynamic[
+                    base + 2
+                ],
+            );
+        }
+    }
+
+    let presorted_count =
+        step_count
+            .checked_mul(
+                256
+            )
+            .ok_or_else(
+                || {
+                    Error::from_reason(
+                        "Presorted export matrix size overflow.",
+                    )
+                },
+            )?;
+
+    let mut presorted =
+        vec![
+            f64::NEG_INFINITY;
+            presorted_count
+        ];
+
+    for (
+        step_index,
+        step,
+    ) in
+        snapshot.steps
+            .iter()
+            .enumerate()
+    {
+        let horizon =
+            step.horizon_steps
+                as usize;
+
+        let base =
+            step_index *
+            256;
+
+        let first =
+            base +
+            (
+                256 -
+                horizon
+            );
+
+        for offset in
+            0..
+            horizon
+        {
+            let index =
+                (
+                    step.current_index
+                        as usize +
+                    offset
+                ) %
+                snapshot.export_power
+                    .len();
+
+            presorted[
+                first +
+                offset
+            ] =
+                snapshot.export_power[
+                    index
+                ];
+        }
+
+        presorted[
+            first..
+            base + 256
+        ]
+        .sort_by(
+            |a, b| {
+                a.partial_cmp(
+                    b
+                )
+                .unwrap_or(
+                    std::cmp::Ordering::Equal,
+                )
+            },
+        );
+    }
+
+    let presorted_mib =
+        (
+            presorted.len() *
+            std::mem::size_of::<f64>()
+        ) as f64 /
+        1048576.0;
+
+    /*
+     * Reference = current B8 resident chunk=1 behaviour.
+     * This has the same 28 jobs per launch as the true lockstep but with
+     * all annual inputs/results resident.
+     */
+    let mut reference_cuts =
+        vec![
+            0.0_f64;
+            job_count
+        ];
+
+    let mut reference_status =
+        vec![
+            0_u32;
+            job_count
+        ];
+
+    let mut reference_evaluations =
+        vec![
+            0_u32;
+            job_count
+        ];
+
+    let mut ref_input_h2d_ms =
+        0.0_f64;
+
+    let mut ref_kernel_ms =
+        0.0_f64;
+
+    let mut ref_result_d2h_ms =
+        0.0_f64;
+
+    let mut ref_wall_ms =
+        0.0_f64;
+
+    let reference_code =
+        unsafe {
+            sunopt_cuda_run_digital_resident_chunk_replay(
+                selected_device,
+                snapshot.export_power
+                    .as_ptr(),
+                snapshot.demand_energy
+                    .as_ptr(),
+                snapshot.export_power
+                    .len(),
+                packed_tanks
+                    .as_ptr(),
+                tank_count,
+                presorted
+                    .as_ptr(),
+                current_indices
+                    .as_ptr(),
+                horizon_steps
+                    .as_ptr(),
+                dynamic_flat
+                    .as_ptr(),
+                step_count,
+                search_iterations,
+                1,
+                repetition_count,
+                reference_cuts
+                    .as_mut_ptr(),
+                reference_status
+                    .as_mut_ptr(),
+                reference_evaluations
+                    .as_mut_ptr(),
+                &mut ref_input_h2d_ms,
+                &mut ref_kernel_ms,
+                &mut ref_result_d2h_ms,
+                &mut ref_wall_ms,
+            )
+        };
+
+    if (
+        reference_code !=
+        0
+    ) {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_digital_resident_chunk_replay",
+                reference_code,
+            ),
+        );
+    }
+
+    /*
+     * For context, retain the most recently measured lockstep shape by
+     * running the actual pre-sorted warp lockstep once in this same process.
+     */
+    let mut lock_cuts =
+        vec![
+            0.0_f64;
+            job_count
+        ];
+
+    let mut lock_status =
+        vec![
+            0_u32;
+            job_count
+        ];
+
+    let mut lock_eval =
+        vec![
+            0_u32;
+            job_count
+        ];
+
+    let mut lock_static_h2d =
+        0.0_f64;
+
+    let mut lock_presorted_h2d =
+        0.0_f64;
+
+    let mut lock_gpu_total =
+        0.0_f64;
+
+    let mut lock_host_wait =
+        0.0_f64;
+
+    let mut lock_wall_raw =
+        0.0_f64;
+
+    let lock_code =
+        unsafe {
+            sunopt_cuda_run_digital_lockstep_presorted_warp_candidate(
+                selected_device,
+                snapshot.export_power
+                    .as_ptr(),
+                snapshot.demand_energy
+                    .as_ptr(),
+                snapshot.export_power
+                    .len(),
+                packed_tanks
+                    .as_ptr(),
+                tank_count,
+                presorted
+                    .as_ptr(),
+                current_indices
+                    .as_ptr(),
+                horizon_steps
+                    .as_ptr(),
+                dynamic_flat
+                    .as_ptr(),
+                step_count,
+                search_iterations,
+                repetition_count,
+                lock_cuts
+                    .as_mut_ptr(),
+                lock_status
+                    .as_mut_ptr(),
+                lock_eval
+                    .as_mut_ptr(),
+                &mut lock_static_h2d,
+                &mut lock_presorted_h2d,
+                &mut lock_gpu_total,
+                &mut lock_host_wait,
+                &mut lock_wall_raw,
+            )
+        };
+
+    if (
+        lock_code !=
+        0
+    ) {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_digital_lockstep_presorted_warp_candidate",
+                lock_code,
+            ),
+        );
+    }
+
+    let lockstep_wall_ms =
+        lock_wall_raw /
+        repetition_count
+            as f64;
+
+    let mut reference_checksum =
+        1469598103934665603u64;
+
+    for value in
+        &reference_cuts
+    {
+        blackwell_fnv1a_update(
+            &mut reference_checksum,
+            *value,
+        );
+    }
+
+    /*
+     * 28 jobs == one annual time slice. Larger values deliberately expose
+     * more independent snapshot jobs to the GPU. They are a throughput lower
+     * bound, NOT a production-causal execution order.
+     */
+    let batch_sizes:
+        [u32; 7] =
+        [
+            28,
+            112,
+            448,
+            1792,
+            7168,
+            28672,
+            114688,
+        ];
+
+    let mut variants =
+        Vec::<BlackwellDigitalResidentJobBatchVariant>::with_capacity(
+            batch_sizes.len(),
+        );
+
+    for jobs_per_launch in
+        batch_sizes
+    {
+        let mut cuts =
+            vec![
+                0.0_f64;
+                job_count
+            ];
+
+        let mut status =
+            vec![
+                0_u32;
+                job_count
+            ];
+
+        let mut evaluations =
+            vec![
+                0_u32;
+                job_count
+            ];
+
+        let mut input_h2d_ms =
+            0.0_f64;
+
+        let mut kernel_ms =
+            0.0_f64;
+
+        let mut result_d2h_ms =
+            0.0_f64;
+
+        let mut wall_ms =
+            0.0_f64;
+
+        let code =
+            unsafe {
+                sunopt_cuda_run_digital_resident_job_batch(
+                    selected_device,
+                    snapshot.export_power
+                        .as_ptr(),
+                    snapshot.demand_energy
+                        .as_ptr(),
+                    snapshot.export_power
+                        .len(),
+                    packed_tanks
+                        .as_ptr(),
+                    tank_count,
+                    presorted
+                        .as_ptr(),
+                    current_indices
+                        .as_ptr(),
+                    horizon_steps
+                        .as_ptr(),
+                    dynamic_flat
+                        .as_ptr(),
+                    step_count,
+                    search_iterations,
+                    jobs_per_launch,
+                    repetition_count,
+                    cuts
+                        .as_mut_ptr(),
+                    status
+                        .as_mut_ptr(),
+                    evaluations
+                        .as_mut_ptr(),
+                    &mut input_h2d_ms,
+                    &mut kernel_ms,
+                    &mut result_d2h_ms,
+                    &mut wall_ms,
+                )
+            };
+
+        if (
+            code !=
+            0
+        ) {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_run_digital_resident_job_batch",
+                    code,
+                ),
+            );
+        }
+
+        let mut status_mismatches =
+            0_u32;
+
+        let mut cut_mismatches =
+            0_u32;
+
+        let mut maximum_cut_error =
+            0.0_f64;
+
+        let mut evaluation_mismatches =
+            0_u32;
+
+        for job in
+            0..
+            job_count
+        {
+            if (
+                status[
+                    job
+                ] !=
+                reference_status[
+                    job
+                ]
+            ) {
+                status_mismatches +=
+                    1;
+            }
+
+            if (
+                evaluations[
+                    job
+                ] !=
+                reference_evaluations[
+                    job
+                ]
+            ) {
+                evaluation_mismatches +=
+                    1;
+            }
+
+            let error =
+                (
+                    cuts[
+                        job
+                    ] -
+                    reference_cuts[
+                        job
+                    ]
+                )
+                .abs();
+
+            maximum_cut_error =
+                maximum_cut_error.max(
+                    error,
+                );
+
+            if (
+                error >
+                1.0e-9
+            ) {
+                cut_mismatches +=
+                    1;
+            }
+        }
+
+        let mut checksum =
+            1469598103934665603u64;
+
+        for value in
+            &cuts
+        {
+            blackwell_fnv1a_update(
+                &mut checksum,
+                *value,
+            );
+        }
+
+        let speedup_vs_chunk_28 =
+            if (
+                wall_ms >
+                0.0
+            ) {
+                ref_wall_ms /
+                wall_ms
+            } else {
+                f64::INFINITY
+            };
+
+        let speedup_vs_lockstep =
+            if (
+                wall_ms >
+                0.0
+            ) {
+                lockstep_wall_ms /
+                wall_ms
+            } else {
+                f64::INFINITY
+            };
+
+        let reduction_vs_lockstep_percent =
+            if (
+                lockstep_wall_ms >
+                0.0
+            ) {
+                (
+                    lockstep_wall_ms -
+                    wall_ms
+                ) /
+                lockstep_wall_ms *
+                100.0
+            } else {
+                0.0
+            };
+
+        let launches_per_year =
+            (
+                (
+                    job_count
+                        as u64 +
+                    jobs_per_launch
+                        as u64 -
+                    1
+                ) /
+                jobs_per_launch
+                    as u64
+            ) as u32;
+
+        variants.push(
+            BlackwellDigitalResidentJobBatchVariant {
+                jobs_per_launch,
+                launches_per_year,
+                input_h2d_ms,
+                kernel_ms,
+                result_d2h_ms,
+                wall_ms,
+                speedup_vs_chunk_28,
+                speedup_vs_lockstep,
+                reduction_vs_lockstep_percent,
+                status_mismatches,
+                cut_mismatches,
+                maximum_cut_error,
+                evaluation_mismatches,
+                checksum_hex:
+                    format!(
+                        "{checksum:016x}",
+                    ),
+            },
+        );
+    }
+
+    Ok(
+        BlackwellDigitalResidentJobBatchResult {
+            snapshot_path:
+                path.display()
+                    .to_string(),
+
+            device_id:
+                selected_device,
+
+            repetitions:
+                repetition_count,
+
+            search_iterations,
+
+            annual_step_count:
+                step_count
+                    as u32,
+
+            tank_count:
+                tank_count
+                    as u32,
+
+            causal_jobs:
+                job_count
+                    as u32,
+
+            presorted_mib,
+
+            lockstep_wall_ms,
+
+            chunk_28_wall_ms:
+                ref_wall_ms,
+
+            reference_checksum_hex:
+                format!(
+                    "{reference_checksum:016x}",
+                ),
+
+            variants,
+        },
+    )
+}
+// SUNOPT_BLACKWELL_DIGITAL_RESIDENT_JOB_BATCH_FN_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_MULTILANE_SEARCH_FN_BEGIN
+#[napi]
+pub fn run_blackwell_digital_multilane_search(
+    snapshot_path: Option<String>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellDigitalMultilaneResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path,
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(
+            &path,
+        )
+        .map_err(
+            |error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell benchmark snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            },
+        )?;
+
+    if (
+        snapshot.steps.is_empty() ||
+        snapshot.tank_count == 0 ||
+        snapshot.export_power.is_empty() ||
+        snapshot.demand_energy.len() !=
+            snapshot.export_power.len() ||
+        snapshot.steps.len() !=
+            snapshot.data_length
+    ) {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty or not a full annual lockstep snapshot.",
+            ),
+        );
+    }
+
+    let selected_device =
+        device_id.unwrap_or(0);
+
+    let repetition_count =
+        repetitions
+            .unwrap_or(1)
+            .clamp(
+                1,
+                3,
+            );
+
+    let tanks =
+        (
+            0..
+            snapshot.tank_count
+        )
+        .map(
+            |tank| {
+                research_tank_from_packed(
+                    &snapshot.packed_config,
+                    tank,
+                )
+            },
+        )
+        .collect::<Vec<_>>();
+
+    let mut packed_tanks =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count *
+            7,
+        );
+
+    for tank in
+        &tanks
+    {
+        let pmax =
+            tank.maximum_heat_pump_electrical_power;
+
+        packed_tanks.push(
+            tank.target_storage_energy,
+        );
+
+        packed_tanks.push(
+            pmax,
+        );
+
+        packed_tanks.push(
+            pmax *
+            tank.cop *
+            tank.time_step_hours,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_retention,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_intercept,
+        );
+
+        packed_tanks.push(
+            if tank.affine_supported {
+                1.0
+            } else {
+                0.0
+            },
+        );
+
+        packed_tanks.push(
+            pmax *
+            tank.time_step_hours,
+        );
+    }
+
+    let step_count =
+        snapshot.steps.len();
+
+    let tank_count =
+        snapshot.tank_count;
+
+    let job_count =
+        step_count
+            .checked_mul(
+                tank_count,
+            )
+            .ok_or_else(
+                || {
+                    Error::from_reason(
+                        "Multilane-search job count overflow.",
+                    )
+                },
+            )?;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut horizon_steps =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut dynamic_flat =
+        Vec::<f64>::with_capacity(
+            job_count *
+            3,
+        );
+
+    for step in
+        &snapshot.steps
+    {
+        if (
+            step.horizon_steps ==
+                0 ||
+            step.horizon_steps >
+                256
+        ) {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Multilane-search supports horizon 1..=256; got {}.",
+                        step.horizon_steps,
+                    ),
+                ),
+            );
+        }
+
+        current_indices.push(
+            step.current_index,
+        );
+
+        horizon_steps.push(
+            step.horizon_steps,
+        );
+
+        for tank_index in
+            0..
+            tank_count
+        {
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            dynamic_flat.push(
+                step.dynamic[
+                    base + 0
+                ],
+            );
+
+            dynamic_flat.push(
+                step.dynamic[
+                    base + 1
+                ],
+            );
+
+            dynamic_flat.push(
+                step.dynamic[
+                    base + 2
+                ],
+            );
+        }
+    }
+
+    let presorted_count =
+        step_count
+            .checked_mul(
+                256
+            )
+            .ok_or_else(
+                || {
+                    Error::from_reason(
+                        "Presorted export matrix size overflow.",
+                    )
+                },
+            )?;
+
+    let mut presorted =
+        vec![
+            f64::NEG_INFINITY;
+            presorted_count
+        ];
+
+    for (
+        step_index,
+        step,
+    ) in
+        snapshot.steps
+            .iter()
+            .enumerate()
+    {
+        let horizon =
+            step.horizon_steps
+                as usize;
+
+        let base =
+            step_index *
+            256;
+
+        let first =
+            base +
+            (
+                256 -
+                horizon
+            );
+
+        for offset in
+            0..
+            horizon
+        {
+            let index =
+                (
+                    step.current_index
+                        as usize +
+                    offset
+                ) %
+                snapshot.export_power
+                    .len();
+
+            presorted[
+                first +
+                offset
+            ] =
+                snapshot.export_power[
+                    index
+                ];
+        }
+
+        presorted[
+            first..
+            base + 256
+        ]
+        .sort_by(
+            |a, b| {
+                a.partial_cmp(
+                    b
+                )
+                .unwrap_or(
+                    std::cmp::Ordering::Equal,
+                )
+            },
+        );
+    }
+
+    let presorted_mib =
+        (
+            presorted.len() *
+            std::mem::size_of::<f64>()
+        ) as f64 /
+        1048576.0;
+
+    /*
+     * Binary reference = B8 resident chunk=1.
+     */
+    let mut reference_cuts =
+        vec![
+            0.0_f64;
+            job_count
+        ];
+
+    let mut reference_status =
+        vec![
+            0_u32;
+            job_count
+        ];
+
+    let mut reference_evaluations =
+        vec![
+            0_u32;
+            job_count
+        ];
+
+    let mut ref_input_h2d_ms =
+        0.0_f64;
+
+    let mut binary_kernel_ms =
+        0.0_f64;
+
+    let mut ref_result_d2h_ms =
+        0.0_f64;
+
+    let mut binary_wall_ms =
+        0.0_f64;
+
+    let reference_code =
+        unsafe {
+            sunopt_cuda_run_digital_resident_chunk_replay(
+                selected_device,
+                snapshot.export_power
+                    .as_ptr(),
+                snapshot.demand_energy
+                    .as_ptr(),
+                snapshot.export_power
+                    .len(),
+                packed_tanks
+                    .as_ptr(),
+                tank_count,
+                presorted
+                    .as_ptr(),
+                current_indices
+                    .as_ptr(),
+                horizon_steps
+                    .as_ptr(),
+                dynamic_flat
+                    .as_ptr(),
+                step_count,
+                8,
+                1,
+                repetition_count,
+                reference_cuts
+                    .as_mut_ptr(),
+                reference_status
+                    .as_mut_ptr(),
+                reference_evaluations
+                    .as_mut_ptr(),
+                &mut ref_input_h2d_ms,
+                &mut binary_kernel_ms,
+                &mut ref_result_d2h_ms,
+                &mut binary_wall_ms,
+            )
+        };
+
+    if (
+        reference_code !=
+        0
+    ) {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_digital_resident_chunk_replay",
+                reference_code,
+            ),
+        );
+    }
+
+    let mut reference_checksum =
+        1469598103934665603u64;
+
+    for value in
+        &reference_cuts
+    {
+        blackwell_fnv1a_update(
+            &mut reference_checksum,
+            *value,
+        );
+    }
+
+    let lane_counts:
+        [u32; 3] =
+        [
+            2,
+            4,
+            8,
+        ];
+
+    let mut variants =
+        Vec::<BlackwellDigitalMultilaneVariant>::with_capacity(
+            lane_counts.len(),
+        );
+
+    for lane_count in
+        lane_counts
+    {
+        let mut cuts =
+            vec![
+                0.0_f64;
+                job_count
+            ];
+
+        let mut status =
+            vec![
+                0_u32;
+                job_count
+            ];
+
+        let mut evaluations =
+            vec![
+                0_u32;
+                job_count
+            ];
+
+        let mut input_h2d_ms =
+            0.0_f64;
+
+        let mut kernel_ms =
+            0.0_f64;
+
+        let mut result_d2h_ms =
+            0.0_f64;
+
+        let mut wall_ms =
+            0.0_f64;
+
+        let code =
+            unsafe {
+                sunopt_cuda_run_digital_multilane_lockstep(
+                    selected_device,
+                    snapshot.export_power
+                        .as_ptr(),
+                    snapshot.demand_energy
+                        .as_ptr(),
+                    snapshot.export_power
+                        .len(),
+                    packed_tanks
+                        .as_ptr(),
+                    tank_count,
+                    presorted
+                        .as_ptr(),
+                    current_indices
+                        .as_ptr(),
+                    horizon_steps
+                        .as_ptr(),
+                    dynamic_flat
+                        .as_ptr(),
+                    step_count,
+                    lane_count,
+                    repetition_count,
+                    cuts
+                        .as_mut_ptr(),
+                    status
+                        .as_mut_ptr(),
+                    evaluations
+                        .as_mut_ptr(),
+                    &mut input_h2d_ms,
+                    &mut kernel_ms,
+                    &mut result_d2h_ms,
+                    &mut wall_ms,
+                )
+            };
+
+        if (
+            code !=
+            0
+        ) {
+            return Err(
+                cuda_error(
+                    "sunopt_cuda_run_digital_multilane_lockstep",
+                    code,
+                ),
+            );
+        }
+
+        let mut status_mismatches =
+            0_u32;
+
+        let mut cut_mismatches =
+            0_u32;
+
+        let mut maximum_cut_error =
+            0.0_f64;
+
+        let mut evaluation_sum =
+            0_u64;
+
+        let mut maximum_survival_evaluations =
+            0_u32;
+
+        for job in
+            0..
+            job_count
+        {
+            if (
+                status[
+                    job
+                ] !=
+                reference_status[
+                    job
+                ]
+            ) {
+                status_mismatches +=
+                    1;
+            }
+
+            let error =
+                (
+                    cuts[
+                        job
+                    ] -
+                    reference_cuts[
+                        job
+                    ]
+                )
+                .abs();
+
+            maximum_cut_error =
+                maximum_cut_error.max(
+                    error,
+                );
+
+            if (
+                error >
+                1.0e-9
+            ) {
+                cut_mismatches +=
+                    1;
+            }
+
+            evaluation_sum +=
+                evaluations[
+                    job
+                ] as u64;
+
+            maximum_survival_evaluations =
+                maximum_survival_evaluations.max(
+                    evaluations[
+                        job
+                    ],
+                );
+        }
+
+        let average_survival_evaluations =
+            if job_count >
+                0
+            {
+                evaluation_sum
+                    as f64 /
+                job_count
+                    as f64
+            } else {
+                0.0
+            };
+
+        let mut checksum =
+            1469598103934665603u64;
+
+        for value in
+            &cuts
+        {
+            blackwell_fnv1a_update(
+                &mut checksum,
+                *value,
+            );
+        }
+
+        let speedup_vs_binary =
+            if wall_ms >
+                0.0
+            {
+                binary_wall_ms /
+                wall_ms
+            } else {
+                f64::INFINITY
+            };
+
+        let reduction_vs_binary_percent =
+            if binary_wall_ms >
+                0.0
+            {
+                (
+                    binary_wall_ms -
+                    wall_ms
+                ) /
+                binary_wall_ms *
+                100.0
+            } else {
+                0.0
+            };
+
+        variants.push(
+            BlackwellDigitalMultilaneVariant {
+                lane_count,
+
+                threads_per_block:
+                    lane_count *
+                    32,
+
+                input_h2d_ms,
+                kernel_ms,
+                result_d2h_ms,
+                wall_ms,
+                speedup_vs_binary,
+                reduction_vs_binary_percent,
+                status_mismatches,
+                cut_mismatches,
+                maximum_cut_error,
+                average_survival_evaluations,
+                maximum_survival_evaluations,
+
+                checksum_hex:
+                    format!(
+                        "{checksum:016x}",
+                    ),
+            },
+        );
+    }
+
+    Ok(
+        BlackwellDigitalMultilaneResult {
+            snapshot_path:
+                path.display()
+                    .to_string(),
+
+            device_id:
+                selected_device,
+
+            repetitions:
+                repetition_count,
+
+            annual_step_count:
+                step_count
+                    as u32,
+
+            tank_count:
+                tank_count
+                    as u32,
+
+            causal_jobs:
+                job_count
+                    as u32,
+
+            presorted_mib,
+
+            binary_kernel_ms,
+            binary_wall_ms,
+
+            binary_checksum_hex:
+                format!(
+                    "{reference_checksum:016x}",
+                ),
+
+            variants,
+        },
+    )
+}
+// SUNOPT_BLACKWELL_DIGITAL_MULTILANE_SEARCH_FN_END
+
+
+// SUNOPT_BLACKWELL_DIGITAL_CLUSTER4_FN_BEGIN
+#[napi]
+pub fn run_blackwell_digital_cluster4(
+    snapshot_path: Option<String>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellDigitalCluster4Result> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path,
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(
+                |error| {
+                    Error::from_reason(
+                        format!(
+                            "Unable to read Blackwell benchmark snapshot {}: {error}",
+                            path.display(),
+                        ),
+                    )
+                },
+            )?;
+
+    if (
+        snapshot.steps.is_empty() ||
+        snapshot.tank_count == 0 ||
+        snapshot.export_power.is_empty() ||
+        snapshot.demand_energy.len() !=
+            snapshot.export_power.len() ||
+        snapshot.steps.len() !=
+            snapshot.data_length
+    ) {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty or not a full annual lockstep snapshot.",
+            ),
+        );
+    }
+
+    let selected_device =
+        device_id.unwrap_or(0);
+
+    let repetition_count =
+        repetitions
+            .unwrap_or(1)
+            .clamp(1, 3);
+
+    let tanks =
+        (0..snapshot.tank_count)
+            .map(
+                |tank| {
+                    research_tank_from_packed(
+                        &snapshot.packed_config,
+                        tank,
+                    )
+                },
+            )
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count * 7,
+        );
+
+    for tank in &tanks {
+        let pmax =
+            tank.maximum_heat_pump_electrical_power;
+
+        packed_tanks.push(
+            tank.target_storage_energy,
+        );
+
+        packed_tanks.push(
+            pmax,
+        );
+
+        packed_tanks.push(
+            pmax *
+            tank.cop *
+            tank.time_step_hours,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_retention,
+        );
+
+        packed_tanks.push(
+            tank.heat_loss_intercept,
+        );
+
+        packed_tanks.push(
+            if tank.affine_supported {
+                1.0
+            } else {
+                0.0
+            },
+        );
+
+        packed_tanks.push(
+            pmax *
+            tank.time_step_hours,
+        );
+    }
+
+    let step_count =
+        snapshot.steps.len();
+
+    let tank_count =
+        snapshot.tank_count;
+
+    let job_count =
+        step_count
+            .checked_mul(tank_count)
+            .ok_or_else(
+                || {
+                    Error::from_reason(
+                        "Cluster4 job count overflow.",
+                    )
+                },
+            )?;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut horizon_steps =
+        Vec::<u32>::with_capacity(
+            step_count,
+        );
+
+    let mut dynamic_flat =
+        Vec::<f64>::with_capacity(
+            job_count * 3,
+        );
+
+    for step in &snapshot.steps {
+        if (
+            step.horizon_steps == 0 ||
+            step.horizon_steps > 256
+        ) {
+            return Err(
+                Error::from_reason(
+                    format!(
+                        "Cluster4 benchmark supports horizon 1..=256; got {}.",
+                        step.horizon_steps,
+                    ),
+                ),
+            );
+        }
+
+        current_indices.push(
+            step.current_index,
+        );
+
+        horizon_steps.push(
+            step.horizon_steps,
+        );
+
+        for tank_index in 0..tank_count {
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            dynamic_flat.push(
+                step.dynamic[base + 0],
+            );
+
+            dynamic_flat.push(
+                step.dynamic[base + 1],
+            );
+
+            dynamic_flat.push(
+                step.dynamic[base + 2],
+            );
+        }
+    }
+
+    let presorted_count =
+        step_count
+            .checked_mul(256)
+            .ok_or_else(
+                || {
+                    Error::from_reason(
+                        "Presorted export matrix size overflow.",
+                    )
+                },
+            )?;
+
+    let mut presorted =
+        vec![
+            f64::NEG_INFINITY;
+            presorted_count
+        ];
+
+    for (
+        step_index,
+        step,
+    ) in
+        snapshot.steps
+            .iter()
+            .enumerate()
+    {
+        let horizon =
+            step.horizon_steps as usize;
+
+        let base =
+            step_index * 256;
+
+        let first =
+            base +
+            (
+                256 -
+                horizon
+            );
+
+        for offset in 0..horizon {
+            let index =
+                (
+                    step.current_index as usize +
+                    offset
+                ) %
+                snapshot.export_power.len();
+
+            presorted[
+                first + offset
+            ] =
+                snapshot.export_power[index];
+        }
+
+        presorted[
+            first..
+            base + 256
+        ]
+        .sort_by(
+            |a, b| {
+                a.partial_cmp(b)
+                    .unwrap_or(
+                        std::cmp::Ordering::Equal,
+                    )
+            },
+        );
+    }
+
+    /*
+     * B8 exact resident reference: same annual data, same binary breakpoint
+     * search, one 256-thread block per tank.
+     */
+    let mut binary_cuts =
+        vec![0.0_f64; job_count];
+
+    let mut binary_status =
+        vec![0_u32; job_count];
+
+    let mut binary_evaluations =
+        vec![0_u32; job_count];
+
+    let mut binary_input_h2d_ms =
+        0.0_f64;
+
+    let mut binary_kernel_ms =
+        0.0_f64;
+
+    let mut binary_result_d2h_ms =
+        0.0_f64;
+
+    let mut binary_wall_ms =
+        0.0_f64;
+
+    let binary_code =
+        unsafe {
+            sunopt_cuda_run_digital_resident_chunk_replay(
+                selected_device,
+                snapshot.export_power.as_ptr(),
+                snapshot.demand_energy.as_ptr(),
+                snapshot.export_power.len(),
+                packed_tanks.as_ptr(),
+                tank_count,
+                presorted.as_ptr(),
+                current_indices.as_ptr(),
+                horizon_steps.as_ptr(),
+                dynamic_flat.as_ptr(),
+                step_count,
+                8,
+                1,
+                repetition_count,
+                binary_cuts.as_mut_ptr(),
+                binary_status.as_mut_ptr(),
+                binary_evaluations.as_mut_ptr(),
+                &mut binary_input_h2d_ms,
+                &mut binary_kernel_ms,
+                &mut binary_result_d2h_ms,
+                &mut binary_wall_ms,
+            )
+        };
+
+    if binary_code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_digital_resident_chunk_replay",
+                binary_code,
+            ),
+        );
+    }
+
+    let mut cluster_cuts =
+        vec![0.0_f64; job_count];
+
+    let mut cluster_status =
+        vec![0_u32; job_count];
+
+    let mut cluster_evaluations =
+        vec![0_u32; job_count];
+
+    let mut cluster_input_h2d_ms =
+        0.0_f64;
+
+    let mut cluster_kernel_ms =
+        0.0_f64;
+
+    let mut cluster_result_d2h_ms =
+        0.0_f64;
+
+    let mut cluster_wall_ms =
+        0.0_f64;
+
+    let cluster_code =
+        unsafe {
+            sunopt_cuda_run_digital_cluster4_lockstep(
+                selected_device,
+                snapshot.export_power.as_ptr(),
+                snapshot.demand_energy.as_ptr(),
+                snapshot.export_power.len(),
+                packed_tanks.as_ptr(),
+                tank_count,
+                presorted.as_ptr(),
+                current_indices.as_ptr(),
+                horizon_steps.as_ptr(),
+                dynamic_flat.as_ptr(),
+                step_count,
+                repetition_count,
+                cluster_cuts.as_mut_ptr(),
+                cluster_status.as_mut_ptr(),
+                cluster_evaluations.as_mut_ptr(),
+                &mut cluster_input_h2d_ms,
+                &mut cluster_kernel_ms,
+                &mut cluster_result_d2h_ms,
+                &mut cluster_wall_ms,
+            )
+        };
+
+    if cluster_code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_digital_cluster4_lockstep",
+                cluster_code,
+            ),
+        );
+    }
+
+    let mut status_mismatches =
+        0_u32;
+
+    let mut cut_mismatches =
+        0_u32;
+
+    let mut maximum_cut_error =
+        0.0_f64;
+
+    let mut evaluation_mismatches =
+        0_u32;
+
+    for job in 0..job_count {
+        if (
+            cluster_status[job] !=
+            binary_status[job]
+        ) {
+            status_mismatches +=
+                1;
+        }
+
+        if (
+            cluster_evaluations[job] !=
+            binary_evaluations[job]
+        ) {
+            evaluation_mismatches +=
+                1;
+        }
+
+        let error =
+            (
+                cluster_cuts[job] -
+                binary_cuts[job]
+            )
+            .abs();
+
+        maximum_cut_error =
+            maximum_cut_error.max(
+                error,
+            );
+
+        if error > 1.0e-9 {
+            cut_mismatches +=
+                1;
+        }
+    }
+
+    let speedup_vs_binary =
+        if cluster_wall_ms > 0.0 {
+            binary_wall_ms /
+            cluster_wall_ms
+        } else {
+            f64::INFINITY
+        };
+
+    let reduction_vs_binary_percent =
+        if binary_wall_ms > 0.0 {
+            (
+                binary_wall_ms -
+                cluster_wall_ms
+            ) /
+            binary_wall_ms *
+            100.0
+        } else {
+            0.0
+        };
+
+    let mut binary_checksum =
+        1469598103934665603u64;
+
+    for value in &binary_cuts {
+        blackwell_fnv1a_update(
+            &mut binary_checksum,
+            *value,
+        );
+    }
+
+    let mut cluster_checksum =
+        1469598103934665603u64;
+
+    for value in &cluster_cuts {
+        blackwell_fnv1a_update(
+            &mut cluster_checksum,
+            *value,
+        );
+    }
+
+    Ok(
+        BlackwellDigitalCluster4Result {
+            snapshot_path:
+                path.display()
+                    .to_string(),
+
+            device_id:
+                selected_device,
+
+            repetitions:
+                repetition_count,
+
+            annual_step_count:
+                step_count as u32,
+
+            tank_count:
+                tank_count as u32,
+
+            causal_jobs:
+                job_count as u32,
+
+            binary_kernel_ms,
+            binary_wall_ms,
+
+            cluster_blocks_per_tank:
+                4,
+
+            cluster_threads_per_block:
+                64,
+
+            cluster_total_blocks_per_step:
+                (tank_count * 4) as u32,
+
+            cluster_input_h2d_ms,
+            cluster_kernel_ms,
+            cluster_result_d2h_ms,
+            cluster_wall_ms,
+
+            speedup_vs_binary,
+            reduction_vs_binary_percent,
+
+            status_mismatches,
+            cut_mismatches,
+            maximum_cut_error,
+            evaluation_mismatches,
+
+            binary_checksum_hex:
+                format!(
+                    "{binary_checksum:016x}",
+                ),
+
+            cluster_checksum_hex:
+                format!(
+                    "{cluster_checksum:016x}",
+                ),
+        },
+    )
+}
+// SUNOPT_BLACKWELL_DIGITAL_CLUSTER4_FN_END
+
+
+#[napi]
+pub fn run_blackwell_replay(
+    snapshot_path: Option<String>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellReplayResult> {
+    let path = snapshot_path.map(PathBuf::from).unwrap_or_else(blackwell_default_snapshot_path);
+    let snapshot = read_blackwell_snapshot(&path).map_err(|error| {
+        Error::from_reason(format!(
+            "Unable to read Blackwell benchmark snapshot {}: {error}",
+            path.display(),
+        ))
+    })?;
+
+    if snapshot.steps.len() != snapshot.data_length {
+        return Err(Error::from_reason(format!(
+            "Blackwell snapshot contains {} steps but annual data length is {}.",
+            snapshot.steps.len(), snapshot.data_length,
+        )));
+    }
+
+    let parameters = blackwell_parameters_from_packed(&snapshot.packed_config, snapshot.data_length)?;
+    if parameters.len() != snapshot.tank_count {
+        return Err(Error::from_reason(
+            "Blackwell snapshot tank count does not match packed configuration.",
+        ));
+    }
+
+    let selected_device = device_id.unwrap_or(0);
+    let mut context = CudaSimulationContext::new(selected_device)?;
+    context.upload_causal_arrays(&snapshot.export_power, &snapshot.demand_energy)?;
+    context.configure_causal_static_parameters(&parameters)?;
+
+    let mut dynamic = vec![SunoptCausalDynamic::default(); snapshot.tank_count];
+    let mut output = vec![0.0f64; snapshot.tank_count];
+    let repetition_count = repetitions.unwrap_or(3).clamp(1,20);
+
+    let mut wall_ms = Vec::with_capacity(repetition_count as usize);
+    let mut kernel_ms = Vec::with_capacity(repetition_count as usize);
+    let mut gpu_total_ms = Vec::with_capacity(repetition_count as usize);
+    let mut host_wait_ms = Vec::with_capacity(repetition_count as usize);
+    let mut native_profile_wall_ms = Vec::with_capacity(repetition_count as usize);
+
+    for _ in 0..repetition_count {
+        context.reset_causal_profile()?;
+        let started = Instant::now();
+        for step in &snapshot.steps {
+            blackwell_dynamic_from_values(&step.dynamic, snapshot.tank_count, &mut dynamic)?;
+            context.run_causal_dynamic_batch_into(
+                step.current_index as usize,
+                step.horizon_steps as usize,
+                &dynamic,
+                &mut output,
+            )?;
+        }
+        wall_ms.push(started.elapsed().as_secs_f64()*1000.0);
+        let profile = context.causal_profile()?;
+        kernel_ms.push(profile.kernel_ms);
+        gpu_total_ms.push(profile.gpu_total_ms);
+        host_wait_ms.push(profile.host_wait_ms);
+        native_profile_wall_ms.push(profile.wall_ms);
+    }
+
+    let mut checksum = 1469598103934665603u64;
+    for step in &snapshot.steps {
+        blackwell_dynamic_from_values(&step.dynamic, snapshot.tank_count, &mut dynamic)?;
+        context.run_causal_dynamic_batch_into(
+            step.current_index as usize,
+            step.horizon_steps as usize,
+            &dynamic,
+            &mut output,
+        )?;
+        for value in &output { blackwell_fnv1a_update(&mut checksum, *value); }
+    }
+
+    let median_wall_ms = median_f64(&wall_ms);
+    let min_wall_ms = wall_ms.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_wall_ms = wall_ms.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+
+    Ok(BlackwellReplayResult {
+        snapshot_path: path.display().to_string(),
+        device_id: selected_device,
+        data_length: snapshot.data_length as u32,
+        tank_count: snapshot.tank_count as u32,
+        step_count: snapshot.steps.len() as u32,
+        repetitions: repetition_count,
+        wall_ms,
+        kernel_ms,
+        gpu_total_ms,
+        host_wait_ms,
+        native_profile_wall_ms,
+        median_wall_ms,
+        min_wall_ms,
+        max_wall_ms,
+        checksum_hex: format!("{checksum:016x}"),
+    })
+}
+
+
+
+// SUNOPT_BLACKWELL_B14_EXACT_ENVELOPE_FN_BEGIN
+#[napi]
+pub fn run_blackwell_b14_exact_envelope(
+    snapshot_path: Option<String>,
+    sample_steps: Option<u32>,
+) -> Result<BlackwellB14ExactEnvelopeResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(blackwell_default_snapshot_path);
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(|error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            })?;
+
+    let requested_samples =
+        sample_steps
+            .unwrap_or(192)
+            .clamp(2, snapshot.steps.len() as u32)
+            as usize;
+
+    let mut sample_positions =
+        Vec::<usize>::with_capacity(requested_samples);
+
+    for sample in 0..requested_samples {
+        let position =
+            sample *
+            (snapshot.steps.len() - 1) /
+            (requested_samples - 1);
+
+        if sample_positions.last().copied() != Some(position) {
+            sample_positions.push(position);
+        }
+    }
+
+    let tank_parameters =
+        (0..snapshot.tank_count)
+            .map(|tank| {
+                research_tank_from_packed(
+                    &snapshot.packed_config,
+                    tank,
+                )
+            })
+            .collect::<Vec<_>>();
+
+    let started = Instant::now();
+    let mut scalar_reference_ms = 0.0_f64;
+    let mut envelope_ms = 0.0_f64;
+    let mut supported_jobs = 0_u32;
+    let mut unsupported_jobs = 0_u32;
+    let mut correction_search_jobs = 0_u32;
+    let mut status_mismatches = 0_u32;
+    let mut cut_mismatches_1e12 = 0_u32;
+    let mut cut_mismatches_1e9 = 0_u32;
+    let mut cut_mismatches_1e6 = 0_u32;
+    let mut max_abs_cut_error = 0.0_f64;
+    let mut sum_abs_cut_error = 0.0_f64;
+    let mut max_production_quantization_gap = 0.0_f64;
+    let mut sum_production_quantization_gap = 0.0_f64;
+    let mut segment_counts = Vec::<u32>::new();
+    let mut hp_breakpoint_counts = Vec::<u32>::new();
+    let mut capacity_intersections = 0_u32;
+    let mut feasibility_bound_updates = 0_u32;
+    let mut max_capacity_intersections_per_job = 0_u32;
+    let mut max_feasibility_bound_updates_per_job = 0_u32;
+
+    for &position in &sample_positions {
+        let step = &snapshot.steps[position];
+        let horizon = step.horizon_steps as usize;
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                horizon,
+            );
+        let demand_window =
+            research_window(
+                &snapshot.demand_energy,
+                step.current_index as usize,
+                horizon,
+            );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base = tank_index * BLACKWELL_DYNAMIC_STRIDE;
+
+            let reference_started = Instant::now();
+            let reference =
+                research_run_scalar(
+                    &export_window,
+                    &demand_window,
+                    step.dynamic[base + 0],
+                    step.dynamic[base + 1],
+                    step.dynamic[base + 2],
+                    tank_parameters[tank_index],
+                );
+            scalar_reference_ms +=
+                reference_started.elapsed().as_secs_f64() * 1000.0;
+
+            let envelope_started = Instant::now();
+            let envelope =
+                b14_exact_cut(
+                    &export_window,
+                    &demand_window,
+                    step.dynamic[base + 0],
+                    step.dynamic[base + 1],
+                    step.dynamic[base + 2],
+                    tank_parameters[tank_index],
+                );
+            envelope_ms +=
+                envelope_started.elapsed().as_secs_f64() * 1000.0;
+
+            let Some(candidate) = envelope else {
+                unsupported_jobs += 1;
+                continue;
+            };
+
+            supported_jobs += 1;
+
+            if !reference.normal_plan_survives &&
+                reference.maximum_pv_plan_survives
+            {
+                correction_search_jobs += 1;
+            }
+
+            if candidate.causal.normal_plan_survives !=
+                    reference.normal_plan_survives ||
+                candidate.causal.maximum_pv_plan_survives !=
+                    reference.maximum_pv_plan_survives
+            {
+                status_mismatches += 1;
+            }
+
+            let cut_error =
+                (
+                    candidate.causal.cut_level_power -
+                    reference.cut_level_power
+                )
+                .abs();
+
+            max_abs_cut_error = max_abs_cut_error.max(cut_error);
+            sum_abs_cut_error += cut_error;
+
+            if cut_error > 1.0e-12 {
+                cut_mismatches_1e12 += 1;
+            }
+            if cut_error > 1.0e-9 {
+                cut_mismatches_1e9 += 1;
+            }
+            if cut_error > 1.0e-6 {
+                cut_mismatches_1e6 += 1;
+            }
+
+            let production_quantization_gap =
+                (
+                    candidate.mathematical_cut -
+                    candidate.causal.cut_level_power
+                )
+                .max(0.0);
+
+            max_production_quantization_gap =
+                max_production_quantization_gap
+                    .max(production_quantization_gap);
+            sum_production_quantization_gap +=
+                production_quantization_gap;
+
+            segment_counts.push(candidate.max_segments as u32);
+            hp_breakpoint_counts.push(candidate.hp_breakpoints as u32);
+
+            capacity_intersections =
+                capacity_intersections
+                    .saturating_add(candidate.capacity_intersections);
+            feasibility_bound_updates =
+                feasibility_bound_updates
+                    .saturating_add(candidate.feasibility_bound_updates);
+            max_capacity_intersections_per_job =
+                max_capacity_intersections_per_job
+                    .max(candidate.capacity_intersections);
+            max_feasibility_bound_updates_per_job =
+                max_feasibility_bound_updates_per_job
+                    .max(candidate.feasibility_bound_updates);
+        }
+    }
+
+    segment_counts.sort_unstable();
+    hp_breakpoint_counts.sort_unstable();
+
+    let quantile = |values: &Vec<u32>, q: f64| -> u32 {
+        if values.is_empty() {
+            0
+        } else {
+            values[
+                ((values.len() - 1) as f64 * q)
+                    .round() as usize
+            ]
+        }
+    };
+
+    let mean = |values: &Vec<u32>| -> f64 {
+        if values.is_empty() {
+            0.0
+        } else {
+            values
+                .iter()
+                .map(|&value| value as f64)
+                .sum::<f64>() /
+                values.len() as f64
+        }
+    };
+
+    Ok(BlackwellB14ExactEnvelopeResult {
+        snapshot_path: path.display().to_string(),
+        sample_step_count: sample_positions.len() as u32,
+        sample_job_count:
+            (sample_positions.len() * snapshot.tank_count) as u32,
+        supported_jobs,
+        unsupported_jobs,
+        correction_search_jobs,
+        elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+        scalar_reference_ms,
+        envelope_ms,
+        status_mismatches,
+        cut_mismatches_1e12,
+        cut_mismatches_1e9,
+        cut_mismatches_1e6,
+        max_abs_cut_error,
+        mean_abs_cut_error:
+            if supported_jobs > 0 {
+                sum_abs_cut_error / supported_jobs as f64
+            } else {
+                0.0
+            },
+        max_production_quantization_gap,
+        mean_production_quantization_gap:
+            if supported_jobs > 0 {
+                sum_production_quantization_gap /
+                supported_jobs as f64
+            } else {
+                0.0
+            },
+        min_segments:
+            segment_counts.first().copied().unwrap_or(0),
+        median_segments:
+            quantile(&segment_counts, 0.5) as f64,
+        p95_segments:
+            quantile(&segment_counts, 0.95),
+        max_segments:
+            segment_counts.last().copied().unwrap_or(0),
+        mean_segments:
+            mean(&segment_counts),
+        min_hp_breakpoints:
+            hp_breakpoint_counts.first().copied().unwrap_or(0),
+        median_hp_breakpoints:
+            quantile(&hp_breakpoint_counts, 0.5) as f64,
+        p95_hp_breakpoints:
+            quantile(&hp_breakpoint_counts, 0.95),
+        max_hp_breakpoints:
+            hp_breakpoint_counts.last().copied().unwrap_or(0),
+        mean_hp_breakpoints:
+            mean(&hp_breakpoint_counts),
+        capacity_intersections,
+        feasibility_bound_updates,
+        max_capacity_intersections_per_job,
+        max_feasibility_bound_updates_per_job,
+    })
+}
+// SUNOPT_BLACKWELL_B14_EXACT_ENVELOPE_FN_END
+
+
+
+// SUNOPT_BLACKWELL_B14C_WARP32_FN_BEGIN
+#[napi]
+pub fn run_blackwell_b14c_warp32(
+    snapshot_path: Option<String>,
+    sample_steps: Option<u32>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellB14cWarp32Result> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(blackwell_default_snapshot_path);
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(|error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            })?;
+
+    if snapshot.steps.is_empty() || snapshot.tank_count == 0 {
+        return Err(Error::from_reason("Blackwell snapshot is empty."));
+    }
+
+    let requested_samples =
+        sample_steps
+            .unwrap_or(2048)
+            .clamp(2, snapshot.steps.len() as u32)
+            as usize;
+
+    let mut sample_positions = Vec::<usize>::with_capacity(requested_samples);
+    for sample in 0..requested_samples {
+        let position =
+            sample * (snapshot.steps.len() - 1) /
+            (requested_samples - 1);
+        if sample_positions.last().copied() != Some(position) {
+            sample_positions.push(position);
+        }
+    }
+
+    let tank_parameters =
+        (0..snapshot.tank_count)
+            .map(|tank| research_tank_from_packed(&snapshot.packed_config, tank))
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks = Vec::<f64>::with_capacity(snapshot.tank_count * 6);
+    for tank in &tank_parameters {
+        packed_tanks.extend_from_slice(&[
+            tank.target_storage_energy,
+            tank.maximum_heat_pump_electrical_power,
+            tank.cop * tank.time_step_hours,
+            tank.heat_loss_retention,
+            tank.heat_loss_intercept,
+            if tank.affine_supported { 1.0 } else { 0.0 },
+        ]);
+    }
+
+    let jobs = sample_positions.len() * snapshot.tank_count;
+    let mut current_indices = Vec::<u32>::with_capacity(sample_positions.len());
+    let mut horizons = Vec::<u32>::with_capacity(sample_positions.len());
+    let mut dynamic_values = Vec::<f64>::with_capacity(jobs * 2);
+    let mut energy_cut_levels = Vec::<f64>::with_capacity(jobs);
+    let mut references = Vec::<ResearchCausalResult>::with_capacity(jobs);
+
+    let reference_started = Instant::now();
+    for &position in &sample_positions {
+        let step = &snapshot.steps[position];
+        current_indices.push(step.current_index);
+        horizons.push(step.horizon_steps);
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+        let demand_window =
+            research_window(
+                &snapshot.demand_energy,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base = tank_index * BLACKWELL_DYNAMIC_STRIDE;
+            let tank = tank_parameters[tank_index];
+            let current = step.dynamic[base + 0];
+            let reserve = step.dynamic[base + 1];
+            let requested = step.dynamic[base + 2];
+
+            dynamic_values.push(current);
+            dynamic_values.push(reserve);
+            energy_cut_levels.push(
+                research_energy_cut_level(&export_window, requested, tank),
+            );
+            references.push(
+                research_run_scalar(
+                    &export_window,
+                    &demand_window,
+                    current,
+                    reserve,
+                    requested,
+                    tank,
+                ),
+            );
+        }
+    }
+    let reference_scalar_ms =
+        reference_started.elapsed().as_secs_f64() * 1000.0;
+
+    let repetition_count = repetitions.unwrap_or(1).clamp(1, 20);
+    let selected_device = device_id.unwrap_or(0);
+    let mut cuts = vec![0.0_f64; jobs];
+    let mut status = vec![0_u32; jobs];
+    let mut max_segments = vec![0_u32; jobs];
+    let mut max_work_segments = vec![0_u32; jobs];
+    let mut input_h2d_ms = 0.0_f64;
+    let mut kernel_total_ms = 0.0_f64;
+    let mut result_d2h_ms = 0.0_f64;
+    let mut wall_ms = 0.0_f64;
+
+    let code = unsafe {
+        sunopt_cuda_run_b14c_warp32_benchmark(
+            selected_device as c_int,
+            snapshot.export_power.as_ptr(),
+            snapshot.demand_energy.as_ptr(),
+            snapshot.data_length,
+            packed_tanks.as_ptr(),
+            snapshot.tank_count,
+            current_indices.as_ptr(),
+            horizons.as_ptr(),
+            dynamic_values.as_ptr(),
+            energy_cut_levels.as_ptr(),
+            sample_positions.len(),
+            repetition_count,
+            cuts.as_mut_ptr(),
+            status.as_mut_ptr(),
+            max_segments.as_mut_ptr(),
+            max_work_segments.as_mut_ptr(),
+            &mut input_h2d_ms,
+            &mut kernel_total_ms,
+            &mut result_d2h_ms,
+            &mut wall_ms,
+        )
+    };
+
+    if code != 0 {
+        return Err(cuda_error("sunopt_cuda_run_b14c_warp32_benchmark", code));
+    }
+
+    let mut supported_jobs = 0_u32;
+    let mut unsupported_jobs = 0_u32;
+    let mut overflow_32_jobs = 0_u32;
+    let mut scratch_overflow_jobs = 0_u32;
+    let mut status_mismatches = 0_u32;
+    let mut cut_mismatches_1e12 = 0_u32;
+    let mut cut_mismatches_1e9 = 0_u32;
+    let mut cut_mismatches_1e6 = 0_u32;
+    let mut max_abs_cut_error = 0.0_f64;
+    let mut sum_abs_cut_error = 0.0_f64;
+    let mut compared_cuts = 0_u32;
+    let mut checksum = 1469598103934665603_u64;
+
+    for job in 0..jobs {
+        if status[job] == 3 {
+            unsupported_jobs += 1;
+        } else {
+            supported_jobs += 1;
+        }
+        if status[job] == 4 {
+            overflow_32_jobs += 1;
+        }
+        if status[job] == 5 {
+            scratch_overflow_jobs += 1;
+        }
+
+        let expected_status =
+            if references[job].normal_plan_survives {
+                0_u32
+            } else if !references[job].maximum_pv_plan_survives {
+                1_u32
+            } else {
+                2_u32
+            };
+
+        if status[job] != expected_status {
+            status_mismatches += 1;
+        }
+
+        if status[job] <= 2 && expected_status <= 2 {
+            let error =
+                (cuts[job] - references[job].cut_level_power).abs();
+            max_abs_cut_error = max_abs_cut_error.max(error);
+            sum_abs_cut_error += error;
+            compared_cuts += 1;
+            if error > 1.0e-12 { cut_mismatches_1e12 += 1; }
+            if error > 1.0e-9 { cut_mismatches_1e9 += 1; }
+            if error > 1.0e-6 { cut_mismatches_1e6 += 1; }
+        }
+
+        blackwell_fnv1a_update(&mut checksum, cuts[job]);
+    }
+
+    let kernel_ms = kernel_total_ms / repetition_count as f64;
+    let annual_projected_kernel_ms =
+        kernel_ms * snapshot.steps.len() as f64 /
+        sample_positions.len() as f64;
+
+    Ok(BlackwellB14cWarp32Result {
+        snapshot_path: path.display().to_string(),
+        device_id: selected_device,
+        repetitions: repetition_count,
+        annual_step_count: snapshot.steps.len() as u32,
+        sample_step_count: sample_positions.len() as u32,
+        sample_job_count: jobs as u32,
+        supported_jobs,
+        unsupported_jobs,
+        overflow_32_jobs,
+        scratch_overflow_jobs,
+        reference_scalar_ms,
+        input_h2d_ms,
+        kernel_total_ms,
+        kernel_ms,
+        result_d2h_ms,
+        wall_ms,
+        annual_projected_kernel_ms,
+        status_mismatches,
+        cut_mismatches_1e12,
+        cut_mismatches_1e9,
+        cut_mismatches_1e6,
+        max_abs_cut_error,
+        mean_abs_cut_error:
+            if compared_cuts > 0 {
+                sum_abs_cut_error / compared_cuts as f64
+            } else {
+                0.0
+            },
+        max_segments_gpu: max_segments.iter().copied().max().unwrap_or(0),
+        max_work_segments_gpu:
+            max_work_segments.iter().copied().max().unwrap_or(0),
+        checksum_hex: format!("{checksum:016x}"),
+    })
+}
+// SUNOPT_BLACKWELL_B14C_WARP32_FN_END
+
+
+// SUNOPT_BLACKWELL_B14D_SORTED_MERGE_FN_BEGIN
+#[napi]
+pub fn run_blackwell_b14d_warp32_merge(
+    snapshot_path: Option<String>,
+    sample_steps: Option<u32>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellB14dWarp32MergeResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(blackwell_default_snapshot_path);
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(|error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            })?;
+
+    if snapshot.steps.is_empty() || snapshot.tank_count == 0 {
+        return Err(Error::from_reason("Blackwell snapshot is empty."));
+    }
+
+    let requested_samples =
+        sample_steps
+            .unwrap_or(2048)
+            .clamp(2, snapshot.steps.len() as u32)
+            as usize;
+
+    let mut sample_positions = Vec::<usize>::with_capacity(requested_samples);
+    for sample in 0..requested_samples {
+        let position =
+            sample * (snapshot.steps.len() - 1) /
+            (requested_samples - 1);
+        if sample_positions.last().copied() != Some(position) {
+            sample_positions.push(position);
+        }
+    }
+
+    let tank_parameters =
+        (0..snapshot.tank_count)
+            .map(|tank| research_tank_from_packed(&snapshot.packed_config, tank))
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks = Vec::<f64>::with_capacity(snapshot.tank_count * 6);
+    for tank in &tank_parameters {
+        packed_tanks.extend_from_slice(&[
+            tank.target_storage_energy,
+            tank.maximum_heat_pump_electrical_power,
+            tank.cop * tank.time_step_hours,
+            tank.heat_loss_retention,
+            tank.heat_loss_intercept,
+            if tank.affine_supported { 1.0 } else { 0.0 },
+        ]);
+    }
+
+    let jobs = sample_positions.len() * snapshot.tank_count;
+    let mut current_indices = Vec::<u32>::with_capacity(sample_positions.len());
+    let mut horizons = Vec::<u32>::with_capacity(sample_positions.len());
+    let mut dynamic_values = Vec::<f64>::with_capacity(jobs * 2);
+    let mut energy_cut_levels = Vec::<f64>::with_capacity(jobs);
+    let mut references = Vec::<ResearchCausalResult>::with_capacity(jobs);
+
+    let reference_started = Instant::now();
+    for &position in &sample_positions {
+        let step = &snapshot.steps[position];
+        current_indices.push(step.current_index);
+        horizons.push(step.horizon_steps);
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+        let demand_window =
+            research_window(
+                &snapshot.demand_energy,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base = tank_index * BLACKWELL_DYNAMIC_STRIDE;
+            let tank = tank_parameters[tank_index];
+            let current = step.dynamic[base + 0];
+            let reserve = step.dynamic[base + 1];
+            let requested = step.dynamic[base + 2];
+
+            dynamic_values.push(current);
+            dynamic_values.push(reserve);
+            energy_cut_levels.push(
+                research_energy_cut_level(&export_window, requested, tank),
+            );
+            references.push(
+                research_run_scalar(
+                    &export_window,
+                    &demand_window,
+                    current,
+                    reserve,
+                    requested,
+                    tank,
+                ),
+            );
+        }
+    }
+    let reference_scalar_ms =
+        reference_started.elapsed().as_secs_f64() * 1000.0;
+
+    let repetition_count = repetitions.unwrap_or(1).clamp(1, 20);
+    let selected_device = device_id.unwrap_or(0);
+    let mut cuts = vec![0.0_f64; jobs];
+    let mut status = vec![0_u32; jobs];
+    let mut max_segments = vec![0_u32; jobs];
+    let mut max_work_segments = vec![0_u32; jobs];
+    let mut input_h2d_ms = 0.0_f64;
+    let mut kernel_total_ms = 0.0_f64;
+    let mut result_d2h_ms = 0.0_f64;
+    let mut wall_ms = 0.0_f64;
+
+    let code = unsafe {
+        sunopt_cuda_run_b14d_warp32_merge_benchmark(
+            selected_device as c_int,
+            snapshot.export_power.as_ptr(),
+            snapshot.demand_energy.as_ptr(),
+            snapshot.data_length,
+            packed_tanks.as_ptr(),
+            snapshot.tank_count,
+            current_indices.as_ptr(),
+            horizons.as_ptr(),
+            dynamic_values.as_ptr(),
+            energy_cut_levels.as_ptr(),
+            sample_positions.len(),
+            repetition_count,
+            cuts.as_mut_ptr(),
+            status.as_mut_ptr(),
+            max_segments.as_mut_ptr(),
+            max_work_segments.as_mut_ptr(),
+            &mut input_h2d_ms,
+            &mut kernel_total_ms,
+            &mut result_d2h_ms,
+            &mut wall_ms,
+        )
+    };
+
+    if code != 0 {
+        return Err(cuda_error("sunopt_cuda_run_b14d_warp32_merge_benchmark", code));
+    }
+
+    let mut supported_jobs = 0_u32;
+    let mut unsupported_jobs = 0_u32;
+    let mut overflow_32_jobs = 0_u32;
+    let mut scratch_overflow_jobs = 0_u32;
+    let mut status_mismatches = 0_u32;
+    let mut cut_mismatches_1e12 = 0_u32;
+    let mut cut_mismatches_1e9 = 0_u32;
+    let mut cut_mismatches_1e6 = 0_u32;
+    let mut max_abs_cut_error = 0.0_f64;
+    let mut sum_abs_cut_error = 0.0_f64;
+    let mut compared_cuts = 0_u32;
+    let mut checksum = 1469598103934665603_u64;
+
+    for job in 0..jobs {
+        if status[job] == 3 {
+            unsupported_jobs += 1;
+        } else {
+            supported_jobs += 1;
+        }
+        if status[job] == 4 {
+            overflow_32_jobs += 1;
+        }
+        if status[job] == 5 {
+            scratch_overflow_jobs += 1;
+        }
+
+        let expected_status =
+            if references[job].normal_plan_survives {
+                0_u32
+            } else if !references[job].maximum_pv_plan_survives {
+                1_u32
+            } else {
+                2_u32
+            };
+
+        if status[job] != expected_status {
+            status_mismatches += 1;
+        }
+
+        if status[job] <= 2 && expected_status <= 2 {
+            let error =
+                (cuts[job] - references[job].cut_level_power).abs();
+            max_abs_cut_error = max_abs_cut_error.max(error);
+            sum_abs_cut_error += error;
+            compared_cuts += 1;
+            if error > 1.0e-12 { cut_mismatches_1e12 += 1; }
+            if error > 1.0e-9 { cut_mismatches_1e9 += 1; }
+            if error > 1.0e-6 { cut_mismatches_1e6 += 1; }
+        }
+
+        blackwell_fnv1a_update(&mut checksum, cuts[job]);
+    }
+
+    let kernel_ms = kernel_total_ms / repetition_count as f64;
+    let annual_projected_kernel_ms =
+        kernel_ms * snapshot.steps.len() as f64 /
+        sample_positions.len() as f64;
+
+    Ok(BlackwellB14dWarp32MergeResult {
+        snapshot_path: path.display().to_string(),
+        device_id: selected_device,
+        repetitions: repetition_count,
+        annual_step_count: snapshot.steps.len() as u32,
+        sample_step_count: sample_positions.len() as u32,
+        sample_job_count: jobs as u32,
+        supported_jobs,
+        unsupported_jobs,
+        overflow_32_jobs,
+        scratch_overflow_jobs,
+        reference_scalar_ms,
+        input_h2d_ms,
+        kernel_total_ms,
+        kernel_ms,
+        result_d2h_ms,
+        wall_ms,
+        annual_projected_kernel_ms,
+        status_mismatches,
+        cut_mismatches_1e12,
+        cut_mismatches_1e9,
+        cut_mismatches_1e6,
+        max_abs_cut_error,
+        mean_abs_cut_error:
+            if compared_cuts > 0 {
+                sum_abs_cut_error / compared_cuts as f64
+            } else {
+                0.0
+            },
+        max_segments_gpu: max_segments.iter().copied().max().unwrap_or(0),
+        max_work_segments_gpu:
+            max_work_segments.iter().copied().max().unwrap_or(0),
+        checksum_hex: format!("{checksum:016x}"),
+    })
+}
+// SUNOPT_BLACKWELL_B14D_SORTED_MERGE_FN_END
+
+// SUNOPT_BLACKWELL_B14E_WARP_PARALLEL_FN_BEGIN
+#[napi]
+pub fn run_blackwell_b14e_warp_parallel(
+    snapshot_path: Option<String>,
+    sample_steps: Option<u32>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellB14eWarpParallelResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(blackwell_default_snapshot_path);
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(|error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            })?;
+
+    if snapshot.steps.is_empty() || snapshot.tank_count == 0 {
+        return Err(Error::from_reason("Blackwell snapshot is empty."));
+    }
+
+    let requested_samples =
+        sample_steps
+            .unwrap_or(2048)
+            .clamp(2, snapshot.steps.len() as u32)
+            as usize;
+
+    let mut sample_positions = Vec::<usize>::with_capacity(requested_samples);
+    for sample in 0..requested_samples {
+        let position =
+            sample * (snapshot.steps.len() - 1) /
+            (requested_samples - 1);
+        if sample_positions.last().copied() != Some(position) {
+            sample_positions.push(position);
+        }
+    }
+
+    let tank_parameters =
+        (0..snapshot.tank_count)
+            .map(|tank| research_tank_from_packed(&snapshot.packed_config, tank))
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks = Vec::<f64>::with_capacity(snapshot.tank_count * 6);
+    for tank in &tank_parameters {
+        packed_tanks.extend_from_slice(&[
+            tank.target_storage_energy,
+            tank.maximum_heat_pump_electrical_power,
+            tank.cop * tank.time_step_hours,
+            tank.heat_loss_retention,
+            tank.heat_loss_intercept,
+            if tank.affine_supported { 1.0 } else { 0.0 },
+        ]);
+    }
+
+    let jobs = sample_positions.len() * snapshot.tank_count;
+    let mut current_indices = Vec::<u32>::with_capacity(sample_positions.len());
+    let mut horizons = Vec::<u32>::with_capacity(sample_positions.len());
+    let mut dynamic_values = Vec::<f64>::with_capacity(jobs * 2);
+    let mut energy_cut_levels = Vec::<f64>::with_capacity(jobs);
+    let mut references = Vec::<ResearchCausalResult>::with_capacity(jobs);
+
+    let reference_started = Instant::now();
+    for &position in &sample_positions {
+        let step = &snapshot.steps[position];
+        current_indices.push(step.current_index);
+        horizons.push(step.horizon_steps);
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+        let demand_window =
+            research_window(
+                &snapshot.demand_energy,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base = tank_index * BLACKWELL_DYNAMIC_STRIDE;
+            let tank = tank_parameters[tank_index];
+            let current = step.dynamic[base + 0];
+            let reserve = step.dynamic[base + 1];
+            let requested = step.dynamic[base + 2];
+
+            dynamic_values.push(current);
+            dynamic_values.push(reserve);
+            energy_cut_levels.push(
+                research_energy_cut_level(&export_window, requested, tank),
+            );
+            references.push(
+                research_run_scalar(
+                    &export_window,
+                    &demand_window,
+                    current,
+                    reserve,
+                    requested,
+                    tank,
+                ),
+            );
+        }
+    }
+    let reference_scalar_ms =
+        reference_started.elapsed().as_secs_f64() * 1000.0;
+
+    let repetition_count = repetitions.unwrap_or(1).clamp(1, 20);
+    let selected_device = device_id.unwrap_or(0);
+    let mut cuts = vec![0.0_f64; jobs];
+    let mut status = vec![0_u32; jobs];
+    let mut max_segments = vec![0_u32; jobs];
+    let mut max_work_segments = vec![0_u32; jobs];
+    let mut input_h2d_ms = 0.0_f64;
+    let mut kernel_total_ms = 0.0_f64;
+    let mut result_d2h_ms = 0.0_f64;
+    let mut wall_ms = 0.0_f64;
+
+    let code = unsafe {
+        sunopt_cuda_run_b14e_warp_parallel_benchmark(
+            selected_device as c_int,
+            snapshot.export_power.as_ptr(),
+            snapshot.demand_energy.as_ptr(),
+            snapshot.data_length,
+            packed_tanks.as_ptr(),
+            snapshot.tank_count,
+            current_indices.as_ptr(),
+            horizons.as_ptr(),
+            dynamic_values.as_ptr(),
+            energy_cut_levels.as_ptr(),
+            sample_positions.len(),
+            repetition_count,
+            cuts.as_mut_ptr(),
+            status.as_mut_ptr(),
+            max_segments.as_mut_ptr(),
+            max_work_segments.as_mut_ptr(),
+            &mut input_h2d_ms,
+            &mut kernel_total_ms,
+            &mut result_d2h_ms,
+            &mut wall_ms,
+        )
+    };
+
+    if code != 0 {
+        return Err(cuda_error("sunopt_cuda_run_b14e_warp_parallel_benchmark", code));
+    }
+
+    let mut supported_jobs = 0_u32;
+    let mut unsupported_jobs = 0_u32;
+    let mut overflow_32_jobs = 0_u32;
+    let mut scratch_overflow_jobs = 0_u32;
+    let mut status_mismatches = 0_u32;
+    let mut cut_mismatches_1e12 = 0_u32;
+    let mut cut_mismatches_1e9 = 0_u32;
+    let mut cut_mismatches_1e6 = 0_u32;
+    let mut max_abs_cut_error = 0.0_f64;
+    let mut sum_abs_cut_error = 0.0_f64;
+    let mut compared_cuts = 0_u32;
+    let mut checksum = 1469598103934665603_u64;
+
+    for job in 0..jobs {
+        if status[job] == 3 {
+            unsupported_jobs += 1;
+        } else {
+            supported_jobs += 1;
+        }
+        if status[job] == 4 {
+            overflow_32_jobs += 1;
+        }
+        if status[job] == 5 {
+            scratch_overflow_jobs += 1;
+        }
+
+        let expected_status =
+            if references[job].normal_plan_survives {
+                0_u32
+            } else if !references[job].maximum_pv_plan_survives {
+                1_u32
+            } else {
+                2_u32
+            };
+
+        if status[job] != expected_status {
+            status_mismatches += 1;
+        }
+
+        if status[job] <= 2 && expected_status <= 2 {
+            let error =
+                (cuts[job] - references[job].cut_level_power).abs();
+            max_abs_cut_error = max_abs_cut_error.max(error);
+            sum_abs_cut_error += error;
+            compared_cuts += 1;
+            if error > 1.0e-12 { cut_mismatches_1e12 += 1; }
+            if error > 1.0e-9 { cut_mismatches_1e9 += 1; }
+            if error > 1.0e-6 { cut_mismatches_1e6 += 1; }
+        }
+
+        blackwell_fnv1a_update(&mut checksum, cuts[job]);
+    }
+
+    let kernel_ms = kernel_total_ms / repetition_count as f64;
+    let annual_projected_kernel_ms =
+        kernel_ms * snapshot.steps.len() as f64 /
+        sample_positions.len() as f64;
+
+    Ok(BlackwellB14eWarpParallelResult {
+        snapshot_path: path.display().to_string(),
+        device_id: selected_device,
+        repetitions: repetition_count,
+        annual_step_count: snapshot.steps.len() as u32,
+        sample_step_count: sample_positions.len() as u32,
+        sample_job_count: jobs as u32,
+        supported_jobs,
+        unsupported_jobs,
+        overflow_32_jobs,
+        scratch_overflow_jobs,
+        reference_scalar_ms,
+        input_h2d_ms,
+        kernel_total_ms,
+        kernel_ms,
+        result_d2h_ms,
+        wall_ms,
+        annual_projected_kernel_ms,
+        status_mismatches,
+        cut_mismatches_1e12,
+        cut_mismatches_1e9,
+        cut_mismatches_1e6,
+        max_abs_cut_error,
+        mean_abs_cut_error:
+            if compared_cuts > 0 {
+                sum_abs_cut_error / compared_cuts as f64
+            } else {
+                0.0
+            },
+        max_segments_gpu: max_segments.iter().copied().max().unwrap_or(0),
+        max_work_segments_gpu:
+            max_work_segments.iter().copied().max().unwrap_or(0),
+        checksum_hex: format!("{checksum:016x}"),
+    })
+}
+// SUNOPT_BLACKWELL_B14E_WARP_PARALLEL_FN_END
+
+// SUNOPT_BLACKWELL_B14F_WARP_PRECHECK_FN_BEGIN
+#[napi]
+pub fn run_blackwell_b14f_warp_precheck(
+    snapshot_path: Option<String>,
+    sample_steps: Option<u32>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellB14fWarpPrecheckResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(blackwell_default_snapshot_path);
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(|error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            })?;
+
+    if snapshot.steps.is_empty() || snapshot.tank_count == 0 {
+        return Err(Error::from_reason("Blackwell snapshot is empty."));
+    }
+
+    let requested_samples =
+        sample_steps
+            .unwrap_or(2048)
+            .clamp(2, snapshot.steps.len() as u32)
+            as usize;
+
+    let mut sample_positions = Vec::<usize>::with_capacity(requested_samples);
+    for sample in 0..requested_samples {
+        let position =
+            sample * (snapshot.steps.len() - 1) /
+            (requested_samples - 1);
+        if sample_positions.last().copied() != Some(position) {
+            sample_positions.push(position);
+        }
+    }
+
+    let tank_parameters =
+        (0..snapshot.tank_count)
+            .map(|tank| research_tank_from_packed(&snapshot.packed_config, tank))
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks = Vec::<f64>::with_capacity(snapshot.tank_count * 6);
+    for tank in &tank_parameters {
+        packed_tanks.extend_from_slice(&[
+            tank.target_storage_energy,
+            tank.maximum_heat_pump_electrical_power,
+            tank.cop * tank.time_step_hours,
+            tank.heat_loss_retention,
+            tank.heat_loss_intercept,
+            if tank.affine_supported { 1.0 } else { 0.0 },
+        ]);
+    }
+
+    let jobs = sample_positions.len() * snapshot.tank_count;
+    let mut current_indices = Vec::<u32>::with_capacity(sample_positions.len());
+    let mut horizons = Vec::<u32>::with_capacity(sample_positions.len());
+    let mut dynamic_values = Vec::<f64>::with_capacity(jobs * 2);
+    let mut energy_cut_levels = Vec::<f64>::with_capacity(jobs);
+    let mut references = Vec::<ResearchCausalResult>::with_capacity(jobs);
+
+    let reference_started = Instant::now();
+    for &position in &sample_positions {
+        let step = &snapshot.steps[position];
+        current_indices.push(step.current_index);
+        horizons.push(step.horizon_steps);
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+        let demand_window =
+            research_window(
+                &snapshot.demand_energy,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base = tank_index * BLACKWELL_DYNAMIC_STRIDE;
+            let tank = tank_parameters[tank_index];
+            let current = step.dynamic[base + 0];
+            let reserve = step.dynamic[base + 1];
+            let requested = step.dynamic[base + 2];
+
+            dynamic_values.push(current);
+            dynamic_values.push(reserve);
+            energy_cut_levels.push(
+                research_energy_cut_level(&export_window, requested, tank),
+            );
+            references.push(
+                research_run_scalar(
+                    &export_window,
+                    &demand_window,
+                    current,
+                    reserve,
+                    requested,
+                    tank,
+                ),
+            );
+        }
+    }
+    let reference_scalar_ms =
+        reference_started.elapsed().as_secs_f64() * 1000.0;
+
+    let repetition_count = repetitions.unwrap_or(1).clamp(1, 20);
+    let selected_device = device_id.unwrap_or(0);
+    let mut cuts = vec![0.0_f64; jobs];
+    let mut status = vec![0_u32; jobs];
+    let mut max_segments = vec![0_u32; jobs];
+    let mut max_work_segments = vec![0_u32; jobs];
+    let mut input_h2d_ms = 0.0_f64;
+    let mut kernel_total_ms = 0.0_f64;
+    let mut result_d2h_ms = 0.0_f64;
+    let mut wall_ms = 0.0_f64;
+
+    let code = unsafe {
+        sunopt_cuda_run_b14f_warp_precheck_benchmark(
+            selected_device as c_int,
+            snapshot.export_power.as_ptr(),
+            snapshot.demand_energy.as_ptr(),
+            snapshot.data_length,
+            packed_tanks.as_ptr(),
+            snapshot.tank_count,
+            current_indices.as_ptr(),
+            horizons.as_ptr(),
+            dynamic_values.as_ptr(),
+            energy_cut_levels.as_ptr(),
+            sample_positions.len(),
+            repetition_count,
+            cuts.as_mut_ptr(),
+            status.as_mut_ptr(),
+            max_segments.as_mut_ptr(),
+            max_work_segments.as_mut_ptr(),
+            &mut input_h2d_ms,
+            &mut kernel_total_ms,
+            &mut result_d2h_ms,
+            &mut wall_ms,
+        )
+    };
+
+    if code != 0 {
+        return Err(cuda_error("sunopt_cuda_run_b14f_warp_precheck_benchmark", code));
+    }
+
+    let mut supported_jobs = 0_u32;
+    let mut unsupported_jobs = 0_u32;
+    let mut overflow_32_jobs = 0_u32;
+    let mut scratch_overflow_jobs = 0_u32;
+    let mut status_mismatches = 0_u32;
+    let mut cut_mismatches_1e12 = 0_u32;
+    let mut cut_mismatches_1e9 = 0_u32;
+    let mut cut_mismatches_1e6 = 0_u32;
+    let mut max_abs_cut_error = 0.0_f64;
+    let mut sum_abs_cut_error = 0.0_f64;
+    let mut compared_cuts = 0_u32;
+    let mut checksum = 1469598103934665603_u64;
+
+    for job in 0..jobs {
+        if status[job] == 3 {
+            unsupported_jobs += 1;
+        } else {
+            supported_jobs += 1;
+        }
+        if status[job] == 4 {
+            overflow_32_jobs += 1;
+        }
+        if status[job] == 5 {
+            scratch_overflow_jobs += 1;
+        }
+
+        let expected_status =
+            if references[job].normal_plan_survives {
+                0_u32
+            } else if !references[job].maximum_pv_plan_survives {
+                1_u32
+            } else {
+                2_u32
+            };
+
+        if status[job] != expected_status {
+            status_mismatches += 1;
+        }
+
+        if status[job] <= 2 && expected_status <= 2 {
+            let error =
+                (cuts[job] - references[job].cut_level_power).abs();
+            max_abs_cut_error = max_abs_cut_error.max(error);
+            sum_abs_cut_error += error;
+            compared_cuts += 1;
+            if error > 1.0e-12 { cut_mismatches_1e12 += 1; }
+            if error > 1.0e-9 { cut_mismatches_1e9 += 1; }
+            if error > 1.0e-6 { cut_mismatches_1e6 += 1; }
+        }
+
+        blackwell_fnv1a_update(&mut checksum, cuts[job]);
+    }
+
+    let kernel_ms = kernel_total_ms / repetition_count as f64;
+    let annual_projected_kernel_ms =
+        kernel_ms * snapshot.steps.len() as f64 /
+        sample_positions.len() as f64;
+
+    Ok(BlackwellB14fWarpPrecheckResult {
+        snapshot_path: path.display().to_string(),
+        device_id: selected_device,
+        repetitions: repetition_count,
+        annual_step_count: snapshot.steps.len() as u32,
+        sample_step_count: sample_positions.len() as u32,
+        sample_job_count: jobs as u32,
+        supported_jobs,
+        unsupported_jobs,
+        overflow_32_jobs,
+        scratch_overflow_jobs,
+        reference_scalar_ms,
+        input_h2d_ms,
+        kernel_total_ms,
+        kernel_ms,
+        result_d2h_ms,
+        wall_ms,
+        annual_projected_kernel_ms,
+        status_mismatches,
+        cut_mismatches_1e12,
+        cut_mismatches_1e9,
+        cut_mismatches_1e6,
+        max_abs_cut_error,
+        mean_abs_cut_error:
+            if compared_cuts > 0 {
+                sum_abs_cut_error / compared_cuts as f64
+            } else {
+                0.0
+            },
+        max_segments_gpu: max_segments.iter().copied().max().unwrap_or(0),
+        max_work_segments_gpu:
+            max_work_segments.iter().copied().max().unwrap_or(0),
+        checksum_hex: format!("{checksum:016x}"),
+    })
+}
+// SUNOPT_BLACKWELL_B14F_WARP_PRECHECK_FN_END
+
+
+// SUNOPT_BLACKWELL_B14I1_LOCKSTEP_RESULT_BEGIN
+#[napi(object)]
+pub struct BlackwellB14i1LockstepResult {
+    pub snapshot_path: String,
+    pub device_id: i32,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+    pub static_h2d_ms: f64,
+    pub dynamic_h2d_ms: f64,
+    pub kernel_ms: f64,
+    pub result_d2h_ms: f64,
+    pub wall_ms: f64,
+    pub checksum_hex: String,
+}
+// SUNOPT_BLACKWELL_B14I1_LOCKSTEP_RESULT_END
+
+// SUNOPT_BLACKWELL_B14I1_LOCKSTEP_FN_BEGIN
+#[napi]
+pub fn run_blackwell_b14i1_lockstep(
+    snapshot_path: Option<String>,
+    device_id: Option<i32>,
+) -> Result<BlackwellB14i1LockstepResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(blackwell_default_snapshot_path);
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(|error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            })?;
+
+    if snapshot.steps.is_empty() || snapshot.tank_count == 0 {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty.",
+            ),
+        );
+    }
+
+    let tank_parameters =
+        (0..snapshot.tank_count)
+            .map(|tank| {
+                research_tank_from_packed(
+                    &snapshot.packed_config,
+                    tank,
+                )
+            })
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count * 6,
+        );
+
+    for tank in &tank_parameters {
+        packed_tanks.extend_from_slice(&[
+            tank.target_storage_energy,
+            tank.maximum_heat_pump_electrical_power,
+            tank.cop * tank.time_step_hours,
+            tank.heat_loss_retention,
+            tank.heat_loss_intercept,
+            if tank.affine_supported { 1.0 } else { 0.0 },
+        ]);
+    }
+
+    let step_count = snapshot.steps.len();
+
+    let jobs =
+        step_count
+            .checked_mul(snapshot.tank_count)
+            .ok_or_else(|| {
+                Error::from_reason(
+                    "B14I1 job count overflow.",
+                )
+            })?;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(step_count);
+
+    let mut horizons =
+        Vec::<u32>::with_capacity(step_count);
+
+    let mut dynamic_values =
+        Vec::<f64>::with_capacity(jobs * 2);
+
+    let mut energy_cut_levels =
+        Vec::<f64>::with_capacity(jobs);
+
+    for step in &snapshot.steps {
+        current_indices.push(step.current_index);
+        horizons.push(step.horizon_steps);
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            let tank =
+                tank_parameters[tank_index];
+
+            let current =
+                step.dynamic[base + 0];
+
+            let reserve =
+                step.dynamic[base + 1];
+
+            let requested =
+                step.dynamic[base + 2];
+
+            dynamic_values.push(current);
+            dynamic_values.push(reserve);
+
+            energy_cut_levels.push(
+                research_energy_cut_level(
+                    &export_window,
+                    requested,
+                    tank,
+                ),
+            );
+        }
+    }
+
+    let mut cuts =
+        vec![0.0_f64; jobs];
+
+    let mut static_h2d_ms = 0.0_f64;
+    let mut dynamic_h2d_ms = 0.0_f64;
+    let mut kernel_ms = 0.0_f64;
+    let mut result_d2h_ms = 0.0_f64;
+    let mut wall_ms = 0.0_f64;
+
+    let selected_device =
+        device_id.unwrap_or(0);
+
+    let code = unsafe {
+        sunopt_cuda_run_b14i1_warp_binary_lockstep_benchmark(
+            selected_device as c_int,
+            snapshot.export_power.as_ptr(),
+            snapshot.demand_energy.as_ptr(),
+            snapshot.data_length,
+            packed_tanks.as_ptr(),
+            snapshot.tank_count,
+            current_indices.as_ptr(),
+            horizons.as_ptr(),
+            dynamic_values.as_ptr(),
+            energy_cut_levels.as_ptr(),
+            step_count,
+            cuts.as_mut_ptr(),
+            &mut static_h2d_ms,
+            &mut dynamic_h2d_ms,
+            &mut kernel_ms,
+            &mut result_d2h_ms,
+            &mut wall_ms,
+        )
+    };
+
+    if code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_b14i1_warp_binary_lockstep_benchmark",
+                code,
+            ),
+        );
+    }
+
+    let mut checksum =
+        1469598103934665603_u64;
+
+    for value in &cuts {
+        blackwell_fnv1a_update(
+            &mut checksum,
+            *value,
+        );
+    }
+
+    Ok(
+        BlackwellB14i1LockstepResult {
+            snapshot_path:
+                path.display().to_string(),
+            device_id:
+                selected_device,
+            annual_step_count:
+                step_count as u32,
+            tank_count:
+                snapshot.tank_count as u32,
+            causal_jobs:
+                jobs as u32,
+            static_h2d_ms,
+            dynamic_h2d_ms,
+            kernel_ms,
+            result_d2h_ms,
+            wall_ms,
+            checksum_hex:
+                format!("{checksum:016x}"),
+        },
+    )
+}
+// SUNOPT_BLACKWELL_B14I1_LOCKSTEP_FN_END
+
+// SUNOPT_BLACKWELL_B14J_SMALL_BATCH_FN_BEGIN
+#[napi(object)]
+pub struct BlackwellB14jVariantResult {
+    pub block_threads: u32,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+    pub static_h2d_ms: f64,
+    pub dynamic_enqueue_ms: f64,
+    pub kernel_ms: f64,
+    pub result_wait_ms: f64,
+    pub wall_ms: f64,
+    pub checksum_hex: String,
+    pub status0: u32,
+    pub status1: u32,
+    pub status2: u32,
+    pub status3: u32,
+}
+
+#[napi]
+pub fn run_blackwell_b14j_small_batch(
+    snapshot_path: Option<String>,
+    block_threads: u32,
+    device_id: Option<i32>,
+) -> Result<BlackwellB14jVariantResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(|error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            })?;
+
+    if (
+        snapshot.steps.is_empty() ||
+        snapshot.tank_count == 0
+    ) {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty.",
+            ),
+        );
+    }
+
+    if !matches!(
+        block_threads,
+        32 | 64 | 128 | 256 | 512
+    ) {
+        return Err(
+            Error::from_reason(
+                "B14J block_threads must be 32, 64, 128, 256, or 512.",
+            ),
+        );
+    }
+
+    let tank_parameters =
+        (0..snapshot.tank_count)
+            .map(|tank| {
+                research_tank_from_packed(
+                    &snapshot.packed_config,
+                    tank,
+                )
+            })
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count * 6,
+        );
+
+    for tank in &tank_parameters {
+        packed_tanks.extend_from_slice(&[
+            tank.target_storage_energy,
+            tank.maximum_heat_pump_electrical_power,
+            tank.cop * tank.time_step_hours,
+            tank.heat_loss_retention,
+            tank.heat_loss_intercept,
+            if tank.affine_supported {
+                1.0
+            } else {
+                0.0
+            },
+        ]);
+    }
+
+    let step_count =
+        snapshot.steps.len();
+
+    let jobs =
+        step_count
+            .checked_mul(
+                snapshot.tank_count
+            )
+            .ok_or_else(|| {
+                Error::from_reason(
+                    "B14J job count overflow.",
+                )
+            })?;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(
+            step_count
+        );
+
+    let mut horizons =
+        Vec::<u32>::with_capacity(
+            step_count
+        );
+
+    let mut dynamic_values =
+        Vec::<f64>::with_capacity(
+            jobs * 2
+        );
+
+    let mut energy_cut_levels =
+        Vec::<f64>::with_capacity(
+            jobs
+        );
+
+    for step in &snapshot.steps {
+        current_indices.push(
+            step.current_index
+        );
+
+        horizons.push(
+            step.horizon_steps
+        );
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            let tank =
+                tank_parameters[tank_index];
+
+            let current =
+                step.dynamic[base + 0];
+
+            let reserve =
+                step.dynamic[base + 1];
+
+            let requested =
+                step.dynamic[base + 2];
+
+            dynamic_values.push(
+                current
+            );
+
+            dynamic_values.push(
+                reserve
+            );
+
+            energy_cut_levels.push(
+                research_energy_cut_level(
+                    &export_window,
+                    requested,
+                    tank,
+                ),
+            );
+        }
+    }
+
+    let mut cuts =
+        vec![
+            0.0_f64;
+            jobs
+        ];
+
+    let mut status =
+        vec![
+            0_u32;
+            jobs
+        ];
+
+    let mut static_h2d_ms =
+        0.0_f64;
+
+    let mut dynamic_enqueue_ms =
+        0.0_f64;
+
+    let mut kernel_ms =
+        0.0_f64;
+
+    let mut result_wait_ms =
+        0.0_f64;
+
+    let mut wall_ms =
+        0.0_f64;
+
+    let selected_device =
+        device_id.unwrap_or(0);
+
+    let code = unsafe {
+        sunopt_cuda_run_b14j_small_batch_benchmark(
+            selected_device as c_int,
+            snapshot.export_power.as_ptr(),
+            snapshot.demand_energy.as_ptr(),
+            snapshot.data_length,
+            packed_tanks.as_ptr(),
+            snapshot.tank_count,
+            current_indices.as_ptr(),
+            horizons.as_ptr(),
+            dynamic_values.as_ptr(),
+            energy_cut_levels.as_ptr(),
+            step_count,
+            block_threads,
+            cuts.as_mut_ptr(),
+            status.as_mut_ptr(),
+            &mut static_h2d_ms,
+            &mut dynamic_enqueue_ms,
+            &mut kernel_ms,
+            &mut result_wait_ms,
+            &mut wall_ms,
+        )
+    };
+
+    if code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_b14j_small_batch_benchmark",
+                code,
+            ),
+        );
+    }
+
+    let mut checksum =
+        1469598103934665603_u64;
+
+    for value in &cuts {
+        blackwell_fnv1a_update(
+            &mut checksum,
+            *value,
+        );
+    }
+
+    let mut status0 = 0_u32;
+    let mut status1 = 0_u32;
+    let mut status2 = 0_u32;
+    let mut status3 = 0_u32;
+
+    for value in status {
+        match value {
+            0 => status0 += 1,
+            1 => status1 += 1,
+            2 => status2 += 1,
+            _ => status3 += 1,
+        }
+    }
+
+    Ok(
+        BlackwellB14jVariantResult {
+            block_threads,
+            annual_step_count:
+                step_count as u32,
+            tank_count:
+                snapshot.tank_count as u32,
+            causal_jobs:
+                jobs as u32,
+            static_h2d_ms,
+            dynamic_enqueue_ms,
+            kernel_ms,
+            result_wait_ms,
+            wall_ms,
+            checksum_hex:
+                format!(
+                    "{checksum:016x}"
+                ),
+            status0,
+            status1,
+            status2,
+            status3,
+        },
+    )
+}
+// SUNOPT_BLACKWELL_B14J_SMALL_BATCH_FN_END
+
+// SUNOPT_BLACKWELL_B14K_SPECULATIVE_TREE_FN_BEGIN
+#[napi(object)]
+pub struct BlackwellB14kVariantResult {
+    pub tree_depth: u32,
+    pub warps_per_tank: u32,
+    pub threads_per_tank: u32,
+    pub serial_rounds: u32,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+    pub static_h2d_ms: f64,
+    pub dynamic_enqueue_ms: f64,
+    pub kernel_ms: f64,
+    pub result_wait_ms: f64,
+    pub wall_ms: f64,
+    pub checksum_hex: String,
+    pub status0: u32,
+    pub status1: u32,
+    pub status2: u32,
+    pub status3: u32,
+}
+
+#[napi]
+pub fn run_blackwell_b14k_speculative_tree(
+    snapshot_path: Option<String>,
+    tree_depth: u32,
+    device_id: Option<i32>,
+) -> Result<BlackwellB14kVariantResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(|error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            })?;
+
+    if (
+        snapshot.steps.is_empty() ||
+        snapshot.tank_count == 0
+    ) {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty.",
+            ),
+        );
+    }
+
+    if !(1..=5).contains(&tree_depth) {
+        return Err(
+            Error::from_reason(
+                "B14K tree_depth must be 1..=5.",
+            ),
+        );
+    }
+
+    let tank_parameters =
+        (0..snapshot.tank_count)
+            .map(|tank| {
+                research_tank_from_packed(
+                    &snapshot.packed_config,
+                    tank,
+                )
+            })
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count * 6,
+        );
+
+    for tank in &tank_parameters {
+        packed_tanks.extend_from_slice(&[
+            tank.target_storage_energy,
+            tank.maximum_heat_pump_electrical_power,
+            tank.cop * tank.time_step_hours,
+            tank.heat_loss_retention,
+            tank.heat_loss_intercept,
+            if tank.affine_supported {
+                1.0
+            } else {
+                0.0
+            },
+        ]);
+    }
+
+    let step_count =
+        snapshot.steps.len();
+
+    let jobs =
+        step_count
+            .checked_mul(
+                snapshot.tank_count
+            )
+            .ok_or_else(|| {
+                Error::from_reason(
+                    "B14K job count overflow.",
+                )
+            })?;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(
+            step_count
+        );
+
+    let mut horizons =
+        Vec::<u32>::with_capacity(
+            step_count
+        );
+
+    let mut dynamic_values =
+        Vec::<f64>::with_capacity(
+            jobs * 2
+        );
+
+    let mut energy_cut_levels =
+        Vec::<f64>::with_capacity(
+            jobs
+        );
+
+    for step in &snapshot.steps {
+        current_indices.push(
+            step.current_index
+        );
+
+        horizons.push(
+            step.horizon_steps
+        );
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            let tank =
+                tank_parameters[tank_index];
+
+            let current =
+                step.dynamic[base + 0];
+
+            let reserve =
+                step.dynamic[base + 1];
+
+            let requested =
+                step.dynamic[base + 2];
+
+            dynamic_values.push(current);
+            dynamic_values.push(reserve);
+
+            energy_cut_levels.push(
+                research_energy_cut_level(
+                    &export_window,
+                    requested,
+                    tank,
+                ),
+            );
+        }
+    }
+
+    let mut cuts =
+        vec![0.0_f64; jobs];
+
+    let mut status =
+        vec![0_u32; jobs];
+
+    let mut static_h2d_ms = 0.0_f64;
+    let mut dynamic_enqueue_ms = 0.0_f64;
+    let mut kernel_ms = 0.0_f64;
+    let mut result_wait_ms = 0.0_f64;
+    let mut wall_ms = 0.0_f64;
+
+    let selected_device =
+        device_id.unwrap_or(0);
+
+    let code = unsafe {
+        sunopt_cuda_run_b14k_speculative_tree_benchmark(
+            selected_device as c_int,
+            snapshot.export_power.as_ptr(),
+            snapshot.demand_energy.as_ptr(),
+            snapshot.data_length,
+            packed_tanks.as_ptr(),
+            snapshot.tank_count,
+            current_indices.as_ptr(),
+            horizons.as_ptr(),
+            dynamic_values.as_ptr(),
+            energy_cut_levels.as_ptr(),
+            step_count,
+            tree_depth,
+            cuts.as_mut_ptr(),
+            status.as_mut_ptr(),
+            &mut static_h2d_ms,
+            &mut dynamic_enqueue_ms,
+            &mut kernel_ms,
+            &mut result_wait_ms,
+            &mut wall_ms,
+        )
+    };
+
+    if code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_b14k_speculative_tree_benchmark",
+                code,
+            ),
+        );
+    }
+
+    let mut checksum =
+        1469598103934665603_u64;
+
+    for value in &cuts {
+        blackwell_fnv1a_update(
+            &mut checksum,
+            *value,
+        );
+    }
+
+    let mut status0 = 0_u32;
+    let mut status1 = 0_u32;
+    let mut status2 = 0_u32;
+    let mut status3 = 0_u32;
+
+    for value in status {
+        match value {
+            0 => status0 += 1,
+            1 => status1 += 1,
+            2 => status2 += 1,
+            _ => status3 += 1,
+        }
+    }
+
+    let warps_per_tank =
+        (1_u32 << tree_depth) - 1;
+
+    let serial_rounds =
+        (20 + tree_depth - 1) /
+        tree_depth;
+
+    Ok(
+        BlackwellB14kVariantResult {
+            tree_depth,
+            warps_per_tank,
+            threads_per_tank:
+                warps_per_tank * 32,
+            serial_rounds,
+            annual_step_count:
+                step_count as u32,
+            tank_count:
+                snapshot.tank_count as u32,
+            causal_jobs:
+                jobs as u32,
+            static_h2d_ms,
+            dynamic_enqueue_ms,
+            kernel_ms,
+            result_wait_ms,
+            wall_ms,
+            checksum_hex:
+                format!("{checksum:016x}"),
+            status0,
+            status1,
+            status2,
+            status3,
+        },
+    )
+}
+// SUNOPT_BLACKWELL_B14K_SPECULATIVE_TREE_FN_END
+
+// SUNOPT_BLACKWELL_B14L_PACKED_TRANSPORT_FN_BEGIN
+#[napi(object)]
+pub struct BlackwellB14lVariantResult {
+    pub pinned_host_memory: bool,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+    pub static_h2d_ms: f64,
+    pub host_pack_ms: f64,
+    pub input_enqueue_ms: f64,
+    pub kernel_ms: f64,
+    pub result_wait_ms: f64,
+    pub wall_ms: f64,
+    pub checksum_hex: String,
+    pub status0: u32,
+    pub status1: u32,
+    pub status2: u32,
+    pub status3: u32,
+}
+
+#[napi]
+pub fn run_blackwell_b14l_packed_transport(
+    snapshot_path: Option<String>,
+    pinned_host_memory: bool,
+    device_id: Option<i32>,
+) -> Result<BlackwellB14lVariantResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(|error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            })?;
+
+    if snapshot.steps.is_empty() || snapshot.tank_count == 0 {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty.",
+            ),
+        );
+    }
+
+    let tank_parameters =
+        (0..snapshot.tank_count)
+            .map(|tank| {
+                research_tank_from_packed(
+                    &snapshot.packed_config,
+                    tank,
+                )
+            })
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count * 6,
+        );
+
+    for tank in &tank_parameters {
+        packed_tanks.extend_from_slice(&[
+            tank.target_storage_energy,
+            tank.maximum_heat_pump_electrical_power,
+            tank.cop * tank.time_step_hours,
+            tank.heat_loss_retention,
+            tank.heat_loss_intercept,
+            if tank.affine_supported { 1.0 } else { 0.0 },
+        ]);
+    }
+
+    let step_count = snapshot.steps.len();
+    let jobs =
+        step_count
+            .checked_mul(snapshot.tank_count)
+            .ok_or_else(|| {
+                Error::from_reason(
+                    "B14L job count overflow.",
+                )
+            })?;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(step_count);
+    let mut horizons =
+        Vec::<u32>::with_capacity(step_count);
+    let mut dynamic_values =
+        Vec::<f64>::with_capacity(jobs * 2);
+    let mut energy_cut_levels =
+        Vec::<f64>::with_capacity(jobs);
+
+    for step in &snapshot.steps {
+        current_indices.push(step.current_index);
+        horizons.push(step.horizon_steps);
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base =
+                tank_index * BLACKWELL_DYNAMIC_STRIDE;
+            let tank =
+                tank_parameters[tank_index];
+
+            let current =
+                step.dynamic[base + 0];
+            let reserve =
+                step.dynamic[base + 1];
+            let requested =
+                step.dynamic[base + 2];
+
+            dynamic_values.push(current);
+            dynamic_values.push(reserve);
+
+            energy_cut_levels.push(
+                research_energy_cut_level(
+                    &export_window,
+                    requested,
+                    tank,
+                ),
+            );
+        }
+    }
+
+    let mut cuts = vec![0.0_f64; jobs];
+    let mut status = vec![0_u32; jobs];
+
+    let mut static_h2d_ms = 0.0_f64;
+    let mut host_pack_ms = 0.0_f64;
+    let mut input_enqueue_ms = 0.0_f64;
+    let mut kernel_ms = 0.0_f64;
+    let mut result_wait_ms = 0.0_f64;
+    let mut wall_ms = 0.0_f64;
+
+    let selected_device =
+        device_id.unwrap_or(0);
+
+    let code = unsafe {
+        sunopt_cuda_run_b14l_packed_transport_benchmark(
+            selected_device as c_int,
+            snapshot.export_power.as_ptr(),
+            snapshot.demand_energy.as_ptr(),
+            snapshot.data_length,
+            packed_tanks.as_ptr(),
+            snapshot.tank_count,
+            current_indices.as_ptr(),
+            horizons.as_ptr(),
+            dynamic_values.as_ptr(),
+            energy_cut_levels.as_ptr(),
+            step_count,
+            if pinned_host_memory { 1 } else { 0 },
+            cuts.as_mut_ptr(),
+            status.as_mut_ptr(),
+            &mut static_h2d_ms,
+            &mut host_pack_ms,
+            &mut input_enqueue_ms,
+            &mut kernel_ms,
+            &mut result_wait_ms,
+            &mut wall_ms,
+        )
+    };
+
+    if code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_b14l_packed_transport_benchmark",
+                code,
+            ),
+        );
+    }
+
+    let mut checksum =
+        1469598103934665603_u64;
+
+    for value in &cuts {
+        blackwell_fnv1a_update(
+            &mut checksum,
+            *value,
+        );
+    }
+
+    let mut status0 = 0_u32;
+    let mut status1 = 0_u32;
+    let mut status2 = 0_u32;
+    let mut status3 = 0_u32;
+
+    for value in status {
+        match value {
+            0 => status0 += 1,
+            1 => status1 += 1,
+            2 => status2 += 1,
+            _ => status3 += 1,
+        }
+    }
+
+    Ok(BlackwellB14lVariantResult {
+        pinned_host_memory,
+        annual_step_count: step_count as u32,
+        tank_count: snapshot.tank_count as u32,
+        causal_jobs: jobs as u32,
+        static_h2d_ms,
+        host_pack_ms,
+        input_enqueue_ms,
+        kernel_ms,
+        result_wait_ms,
+        wall_ms,
+        checksum_hex: format!("{checksum:016x}"),
+        status0,
+        status1,
+        status2,
+        status3,
+    })
+}
+// SUNOPT_BLACKWELL_B14L_PACKED_TRANSPORT_FN_END
+
+// SUNOPT_BLACKWELL_B14M_PRECISION_FN_BEGIN
+#[napi(object)]
+pub struct BlackwellB14mPrecisionResult {
+    pub build_mode: String,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+
+    pub fp64_kernel_ms: f64,
+    pub fp64_wall_ms: f64,
+    pub fp64_checksum_hex: String,
+
+    pub fp32_static_h2d_ms: f64,
+    pub fp32_input_enqueue_ms: f64,
+    pub fp32_kernel_ms: f64,
+    pub fp32_result_wait_ms: f64,
+    pub fp32_wall_ms: f64,
+    pub fp32_checksum_hex: String,
+
+    pub fp32_status_mismatches_vs_fp64: u32,
+    pub fp32_max_abs_cut_error_vs_fp64: f64,
+    pub fp32_mean_abs_cut_error_vs_fp64: f64,
+    pub fp32_cut_mismatches_1e6_vs_fp64: u32,
+    pub fp32_cut_mismatches_1e4_vs_fp64: u32,
+    pub fp32_diagnostics_json: String,
+
+    pub strict_reference_loaded: bool,
+    pub fp64_status_mismatches_vs_strict: u32,
+    pub fp64_max_abs_cut_error_vs_strict: f64,
+    pub fp32_status_mismatches_vs_strict: u32,
+    pub fp32_max_abs_cut_error_vs_strict: f64,
+}
+
+#[napi]
+pub fn run_blackwell_b14m_precision(
+    snapshot_path: Option<String>,
+    build_mode: String,
+    strict_reference_path: Option<String>,
+    write_strict_reference: Option<bool>,
+    device_id: Option<i32>,
+) -> Result<BlackwellB14mPrecisionResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(|error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            })?;
+
+    if snapshot.steps.is_empty() || snapshot.tank_count == 0 {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty.",
+            ),
+        );
+    }
+
+    let tank_parameters =
+        (0..snapshot.tank_count)
+            .map(|tank| {
+                research_tank_from_packed(
+                    &snapshot.packed_config,
+                    tank,
+                )
+            })
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks64 =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count * 6,
+        );
+
+    for tank in &tank_parameters {
+        packed_tanks64.extend_from_slice(&[
+            tank.target_storage_energy,
+            tank.maximum_heat_pump_electrical_power,
+            tank.cop * tank.time_step_hours,
+            tank.heat_loss_retention,
+            tank.heat_loss_intercept,
+            if tank.affine_supported {
+                1.0
+            } else {
+                0.0
+            },
+        ]);
+    }
+
+    let step_count = snapshot.steps.len();
+
+    let jobs =
+        step_count
+            .checked_mul(snapshot.tank_count)
+            .ok_or_else(|| {
+                Error::from_reason(
+                    "B14M job count overflow.",
+                )
+            })?;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(step_count);
+
+    let mut horizons =
+        Vec::<u32>::with_capacity(step_count);
+
+    let mut dynamic64 =
+        Vec::<f64>::with_capacity(jobs * 2);
+
+    let mut energy_cut64 =
+        Vec::<f64>::with_capacity(jobs);
+
+    for step in &snapshot.steps {
+        current_indices.push(step.current_index);
+        horizons.push(step.horizon_steps);
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base =
+                tank_index * BLACKWELL_DYNAMIC_STRIDE;
+
+            let tank =
+                tank_parameters[tank_index];
+
+            let current =
+                step.dynamic[base + 0];
+
+            let reserve =
+                step.dynamic[base + 1];
+
+            let requested =
+                step.dynamic[base + 2];
+
+            dynamic64.push(current);
+            dynamic64.push(reserve);
+
+            energy_cut64.push(
+                research_energy_cut_level(
+                    &export_window,
+                    requested,
+                    tank,
+                ),
+            );
+        }
+    }
+
+    let selected_device =
+        device_id.unwrap_or(0);
+
+    // Current-build FP64 B14L reference.
+    let mut cuts64 =
+        vec![0.0_f64; jobs];
+
+    let mut status64 =
+        vec![0_u32; jobs];
+
+    let mut fp64_static = 0.0_f64;
+    let mut fp64_pack = 0.0_f64;
+    let mut fp64_enqueue = 0.0_f64;
+    let mut fp64_kernel = 0.0_f64;
+    let mut fp64_wait = 0.0_f64;
+    let mut fp64_wall = 0.0_f64;
+
+    let fp64_code = unsafe {
+        sunopt_cuda_run_b14l_packed_transport_benchmark(
+            selected_device as c_int,
+            snapshot.export_power.as_ptr(),
+            snapshot.demand_energy.as_ptr(),
+            snapshot.data_length,
+            packed_tanks64.as_ptr(),
+            snapshot.tank_count,
+            current_indices.as_ptr(),
+            horizons.as_ptr(),
+            dynamic64.as_ptr(),
+            energy_cut64.as_ptr(),
+            step_count,
+            0,
+            cuts64.as_mut_ptr(),
+            status64.as_mut_ptr(),
+            &mut fp64_static,
+            &mut fp64_pack,
+            &mut fp64_enqueue,
+            &mut fp64_kernel,
+            &mut fp64_wait,
+            &mut fp64_wall,
+        )
+    };
+
+    if fp64_code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_b14l_packed_transport_benchmark",
+                fp64_code,
+            ),
+        );
+    }
+
+    // FP32 inputs prepared outside the timed native region.
+    let export32 =
+        snapshot.export_power
+            .iter()
+            .map(|value| *value as f32)
+            .collect::<Vec<_>>();
+
+    let demand32 =
+        snapshot.demand_energy
+            .iter()
+            .map(|value| *value as f32)
+            .collect::<Vec<_>>();
+
+    let tanks32 =
+        packed_tanks64
+            .iter()
+            .map(|value| *value as f32)
+            .collect::<Vec<_>>();
+
+    let dynamic32 =
+        dynamic64
+            .iter()
+            .map(|value| *value as f32)
+            .collect::<Vec<_>>();
+
+    let energy_cut32 =
+        energy_cut64
+            .iter()
+            .map(|value| *value as f32)
+            .collect::<Vec<_>>();
+
+    let mut cuts32 =
+        vec![0.0_f32; jobs];
+
+    let mut status32 =
+        vec![0_u32; jobs];
+
+    let mut fp32_static = 0.0_f64;
+    let mut fp32_enqueue = 0.0_f64;
+    let mut fp32_kernel = 0.0_f64;
+    let mut fp32_wait = 0.0_f64;
+    let mut fp32_wall = 0.0_f64;
+
+    let fp32_code = unsafe {
+        sunopt_cuda_run_b14m_fp32_benchmark(
+            selected_device as c_int,
+            export32.as_ptr(),
+            demand32.as_ptr(),
+            snapshot.data_length,
+            tanks32.as_ptr(),
+            snapshot.tank_count,
+            current_indices.as_ptr(),
+            horizons.as_ptr(),
+            dynamic32.as_ptr(),
+            energy_cut32.as_ptr(),
+            step_count,
+            cuts32.as_mut_ptr(),
+            status32.as_mut_ptr(),
+            &mut fp32_static,
+            &mut fp32_enqueue,
+            &mut fp32_kernel,
+            &mut fp32_wait,
+            &mut fp32_wall,
+        )
+    };
+
+    if fp32_code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_b14m_fp32_benchmark",
+                fp32_code,
+            ),
+        );
+    }
+
+    let mut fp64_checksum =
+        1469598103934665603_u64;
+
+    for value in &cuts64 {
+        blackwell_fnv1a_update(
+            &mut fp64_checksum,
+            *value,
+        );
+    }
+
+    let mut fp32_checksum =
+        1469598103934665603_u64;
+
+    let mut status_mismatch_current =
+        0_u32;
+
+    let mut max_error_current =
+        0.0_f64;
+
+    let mut sum_error_current =
+        0.0_f64;
+
+    let mut mismatch_1e6 =
+        0_u32;
+
+    let mut mismatch_1e4 =
+        0_u32;
+
+    let mut first_status_mismatch_job:
+        Option<usize> = None;
+
+    let mut worst_cut_error_job:
+        Option<usize> = None;
+
+    for job in 0..jobs {
+        let fp32_value =
+            cuts32[job] as f64;
+
+        blackwell_fnv1a_update(
+            &mut fp32_checksum,
+            fp32_value,
+        );
+
+        if status32[job] != status64[job] {
+            status_mismatch_current += 1;
+
+            if first_status_mismatch_job.is_none() {
+                first_status_mismatch_job =
+                    Some(job);
+            }
+        }
+
+        let error =
+            (fp32_value - cuts64[job]).abs();
+
+        if error > max_error_current {
+            max_error_current = error;
+            worst_cut_error_job = Some(job);
+        }
+
+        sum_error_current += error;
+
+        if error > 1.0e-6 {
+            mismatch_1e6 += 1;
+        }
+
+        if error > 1.0e-4 {
+            mismatch_1e4 += 1;
+        }
+    }
+
+
+    let describe_job =
+        |job: usize| -> String {
+            let step =
+                job / snapshot.tank_count;
+
+            let tank =
+                job - step * snapshot.tank_count;
+
+            let dynamic_base =
+                job * 2;
+
+            let target =
+                tank_parameters[tank]
+                    .target_storage_energy;
+
+            let retention =
+                tank_parameters[tank]
+                    .heat_loss_retention;
+
+            let loss_intercept =
+                tank_parameters[tank]
+                    .heat_loss_intercept;
+
+            format!(
+                "{{\"job\":{},\"step\":{},\"tank\":{},\"currentIndex\":{},\"horizon\":{},\"statusFp64\":{},\"statusFp32\":{},\"cutFp64\":{:.17},\"cutFp32\":{:.17},\"absCutError\":{:.17},\"current\":{:.17},\"reserve\":{:.17},\"requestedCut\":{:.17},\"target\":{:.17},\"retention\":{:.17},\"lossIntercept\":{:.17}}}",
+                job,
+                step,
+                tank,
+                current_indices[step],
+                horizons[step],
+                status64[job],
+                status32[job],
+                cuts64[job],
+                cuts32[job] as f64,
+                ((cuts32[job] as f64) - cuts64[job]).abs(),
+                dynamic64[dynamic_base + 0],
+                dynamic64[dynamic_base + 1],
+                energy_cut64[job],
+                target,
+                retention,
+                loss_intercept,
+            )
+        };
+
+    let first_status_json =
+        first_status_mismatch_job
+            .map(&describe_job)
+            .unwrap_or_else(
+                || "null".to_string()
+            );
+
+    let worst_cut_json =
+        worst_cut_error_job
+            .map(&describe_job)
+            .unwrap_or_else(
+                || "null".to_string()
+            );
+
+    let fp32_diagnostics_json =
+        format!(
+            "{{\"firstStatusMismatch\":{},\"worstCutError\":{}}}",
+            first_status_json,
+            worst_cut_json,
+        );
+
+    let reference_path =
+        strict_reference_path
+            .map(PathBuf::from);
+
+    if write_strict_reference.unwrap_or(false) {
+        if let Some(reference_path) =
+            reference_path.as_ref()
+        {
+            let mut bytes =
+                Vec::<u8>::with_capacity(
+                    16 +
+                    jobs * 12
+                );
+
+            bytes.extend_from_slice(
+                b"B14MREF1"
+            );
+
+            bytes.extend_from_slice(
+                &(jobs as u64)
+                    .to_le_bytes()
+            );
+
+            for value in &cuts64 {
+                bytes.extend_from_slice(
+                    &value.to_le_bytes()
+                );
+            }
+
+            for value in &status64 {
+                bytes.extend_from_slice(
+                    &value.to_le_bytes()
+                );
+            }
+
+            std::fs::write(
+                reference_path,
+                bytes,
+            ).map_err(|error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to write B14M strict reference {}: {error}",
+                        reference_path.display(),
+                    ),
+                )
+            })?;
+        }
+    }
+
+    let mut reference_loaded = false;
+    let mut fp64_status_vs_strict = 0_u32;
+    let mut fp64_max_vs_strict = 0.0_f64;
+    let mut fp32_status_vs_strict = 0_u32;
+    let mut fp32_max_vs_strict = 0.0_f64;
+
+    if let Some(reference_path) =
+        reference_path.as_ref()
+    {
+        if reference_path.is_file() {
+            let bytes =
+                std::fs::read(
+                    reference_path
+                ).map_err(|error| {
+                    Error::from_reason(
+                        format!(
+                            "Unable to read B14M strict reference {}: {error}",
+                            reference_path.display(),
+                        ),
+                    )
+                })?;
+
+            const HEADER: usize = 16;
+
+            if (
+                bytes.len() >= HEADER &&
+                &bytes[0..8] == b"B14MREF1"
+            ) {
+                let mut count_bytes =
+                    [0_u8; 8];
+
+                count_bytes.copy_from_slice(
+                    &bytes[8..16]
+                );
+
+                let count =
+                    u64::from_le_bytes(
+                        count_bytes
+                    ) as usize;
+
+                let expected =
+                    HEADER +
+                    count * 8 +
+                    count * 4;
+
+                if count == jobs &&
+                    bytes.len() == expected
+                {
+                    reference_loaded = true;
+
+                    let cut_base = HEADER;
+                    let status_base =
+                        HEADER +
+                        jobs * 8;
+
+                    for job in 0..jobs {
+                        let cut_offset =
+                            cut_base +
+                            job * 8;
+
+                        let mut cut_bytes =
+                            [0_u8; 8];
+
+                        cut_bytes.copy_from_slice(
+                            &bytes[
+                                cut_offset
+                                    ..
+                                cut_offset + 8
+                            ]
+                        );
+
+                        let strict_cut =
+                            f64::from_le_bytes(
+                                cut_bytes
+                            );
+
+                        let status_offset =
+                            status_base +
+                            job * 4;
+
+                        let mut status_bytes =
+                            [0_u8; 4];
+
+                        status_bytes.copy_from_slice(
+                            &bytes[
+                                status_offset
+                                    ..
+                                status_offset + 4
+                            ]
+                        );
+
+                        let strict_status =
+                            u32::from_le_bytes(
+                                status_bytes
+                            );
+
+                        if status64[job] != strict_status {
+                            fp64_status_vs_strict += 1;
+                        }
+
+                        fp64_max_vs_strict =
+                            fp64_max_vs_strict.max(
+                                (
+                                    cuts64[job] -
+                                    strict_cut
+                                ).abs()
+                            );
+
+                        if status32[job] != strict_status {
+                            fp32_status_vs_strict += 1;
+                        }
+
+                        fp32_max_vs_strict =
+                            fp32_max_vs_strict.max(
+                                (
+                                    cuts32[job] as f64 -
+                                    strict_cut
+                                ).abs()
+                            );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(
+        BlackwellB14mPrecisionResult {
+            build_mode,
+            annual_step_count:
+                step_count as u32,
+            tank_count:
+                snapshot.tank_count as u32,
+            causal_jobs:
+                jobs as u32,
+
+            fp64_kernel_ms:
+                fp64_kernel,
+            fp64_wall_ms:
+                fp64_wall,
+            fp64_checksum_hex:
+                format!(
+                    "{fp64_checksum:016x}"
+                ),
+
+            fp32_static_h2d_ms:
+                fp32_static,
+            fp32_input_enqueue_ms:
+                fp32_enqueue,
+            fp32_kernel_ms:
+                fp32_kernel,
+            fp32_result_wait_ms:
+                fp32_wait,
+            fp32_wall_ms:
+                fp32_wall,
+            fp32_checksum_hex:
+                format!(
+                    "{fp32_checksum:016x}"
+                ),
+
+            fp32_status_mismatches_vs_fp64:
+                status_mismatch_current,
+            fp32_max_abs_cut_error_vs_fp64:
+                max_error_current,
+            fp32_mean_abs_cut_error_vs_fp64:
+                if jobs > 0 {
+                    sum_error_current /
+                    jobs as f64
+                } else {
+                    0.0
+                },
+            fp32_cut_mismatches_1e6_vs_fp64:
+                mismatch_1e6,
+            fp32_cut_mismatches_1e4_vs_fp64:
+                mismatch_1e4,
+            fp32_diagnostics_json,
+
+            strict_reference_loaded:
+                reference_loaded,
+            fp64_status_mismatches_vs_strict:
+                fp64_status_vs_strict,
+            fp64_max_abs_cut_error_vs_strict:
+                fp64_max_vs_strict,
+            fp32_status_mismatches_vs_strict:
+                fp32_status_vs_strict,
+            fp32_max_abs_cut_error_vs_strict:
+                fp32_max_vs_strict,
+        },
+    )
+}
+// SUNOPT_BLACKWELL_B14M_PRECISION_FN_END
+
+// SUNOPT_BLACKWELL_B14O_ROUNDTRIP_FN_BEGIN
+#[napi(object)]
+pub struct BlackwellB14oRoundtripResult {
+    pub pinned_input: bool,
+    pub wait_mode: u32,
+    pub mapped_output: bool,
+    pub schedule_spin: bool,
+    pub annual_step_count: u32,
+    pub tank_count: u32,
+    pub causal_jobs: u32,
+    pub static_h2d_ms: f64,
+    pub host_pack_ms: f64,
+    pub input_enqueue_ms: f64,
+    pub kernel_ms: f64,
+    pub result_wait_ms: f64,
+    pub wall_ms: f64,
+    pub checksum_hex: String,
+    pub status_mismatches_vs_strict: u32,
+    pub max_abs_cut_error_vs_strict: f64,
+}
+
+#[napi]
+pub fn run_blackwell_b14o_fp32_packed(
+    snapshot_path: Option<String>,
+    strict_reference_path: String,
+    pinned_input: bool,
+    wait_mode: u32,
+    mapped_output: bool,
+    schedule_spin: bool,
+    device_id: Option<i32>,
+) -> Result<BlackwellB14oRoundtripResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(
+                blackwell_default_snapshot_path
+            );
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(|error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            })?;
+
+    if snapshot.steps.is_empty() ||
+        snapshot.tank_count == 0
+    {
+        return Err(
+            Error::from_reason(
+                "Blackwell snapshot is empty.",
+            ),
+        );
+    }
+
+    let tank_parameters =
+        (0..snapshot.tank_count)
+            .map(|tank| {
+                research_tank_from_packed(
+                    &snapshot.packed_config,
+                    tank,
+                )
+            })
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks64 =
+        Vec::<f64>::with_capacity(
+            snapshot.tank_count * 6,
+        );
+
+    for tank in &tank_parameters {
+        packed_tanks64.extend_from_slice(&[
+            tank.target_storage_energy,
+            tank.maximum_heat_pump_electrical_power,
+            tank.cop * tank.time_step_hours,
+            tank.heat_loss_retention,
+            tank.heat_loss_intercept,
+            if tank.affine_supported {
+                1.0
+            } else {
+                0.0
+            },
+        ]);
+    }
+
+    let step_count =
+        snapshot.steps.len();
+
+    let jobs =
+        step_count
+            .checked_mul(
+                snapshot.tank_count
+            )
+            .ok_or_else(|| {
+                Error::from_reason(
+                    "B14O job count overflow.",
+                )
+            })?;
+
+    let mut current_indices =
+        Vec::<u32>::with_capacity(
+            step_count
+        );
+
+    let mut horizons =
+        Vec::<u32>::with_capacity(
+            step_count
+        );
+
+    let mut dynamic64 =
+        Vec::<f64>::with_capacity(
+            jobs * 2
+        );
+
+    let mut energy_cut64 =
+        Vec::<f64>::with_capacity(
+            jobs
+        );
+
+    for step in &snapshot.steps {
+        current_indices.push(
+            step.current_index
+        );
+
+        horizons.push(
+            step.horizon_steps
+        );
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        for tank_index in
+            0..snapshot.tank_count
+        {
+            let base =
+                tank_index *
+                BLACKWELL_DYNAMIC_STRIDE;
+
+            let tank =
+                tank_parameters[
+                    tank_index
+                ];
+
+            dynamic64.push(
+                step.dynamic[base + 0]
+            );
+
+            dynamic64.push(
+                step.dynamic[base + 1]
+            );
+
+            energy_cut64.push(
+                research_energy_cut_level(
+                    &export_window,
+                    step.dynamic[base + 2],
+                    tank,
+                ),
+            );
+        }
+    }
+
+    let export32 =
+        snapshot.export_power
+            .iter()
+            .map(|value| *value as f32)
+            .collect::<Vec<_>>();
+
+    let demand32 =
+        snapshot.demand_energy
+            .iter()
+            .map(|value| *value as f32)
+            .collect::<Vec<_>>();
+
+    let tanks32 =
+        packed_tanks64
+            .iter()
+            .map(|value| *value as f32)
+            .collect::<Vec<_>>();
+
+    let dynamic32 =
+        dynamic64
+            .iter()
+            .map(|value| *value as f32)
+            .collect::<Vec<_>>();
+
+    let cuts_in32 =
+        energy_cut64
+            .iter()
+            .map(|value| *value as f32)
+            .collect::<Vec<_>>();
+
+    let mut cuts_out =
+        vec![0.0_f32; jobs];
+
+    let mut status_out =
+        vec![0_u32; jobs];
+
+    let mut static_h2d_ms = 0.0;
+    let mut host_pack_ms = 0.0;
+    let mut input_enqueue_ms = 0.0;
+    let mut kernel_ms = 0.0;
+    let mut result_wait_ms = 0.0;
+    let mut wall_ms = 0.0;
+
+    let code = unsafe {
+        sunopt_cuda_run_b14o_fp32_packed_benchmark(
+            device_id.unwrap_or(0) as c_int,
+            export32.as_ptr(),
+            demand32.as_ptr(),
+            snapshot.data_length,
+            tanks32.as_ptr(),
+            snapshot.tank_count,
+            current_indices.as_ptr(),
+            horizons.as_ptr(),
+            dynamic32.as_ptr(),
+            cuts_in32.as_ptr(),
+            step_count,
+            if pinned_input { 1 } else { 0 },
+            wait_mode,
+            if mapped_output { 1 } else { 0 },
+            if schedule_spin { 1 } else { 0 },
+            cuts_out.as_mut_ptr(),
+            status_out.as_mut_ptr(),
+            &mut static_h2d_ms,
+            &mut host_pack_ms,
+            &mut input_enqueue_ms,
+            &mut kernel_ms,
+            &mut result_wait_ms,
+            &mut wall_ms,
+        )
+    };
+
+    if code != 0 {
+        return Err(
+            cuda_error(
+                "sunopt_cuda_run_b14o_fp32_packed_benchmark",
+                code,
+            ),
+        );
+    }
+
+    let reference_path =
+        PathBuf::from(
+            strict_reference_path
+        );
+
+    let bytes =
+        std::fs::read(
+            &reference_path
+        ).map_err(|error| {
+            Error::from_reason(
+                format!(
+                    "Unable to read strict reference {}: {error}",
+                    reference_path.display(),
+                ),
+            )
+        })?;
+
+    const HEADER: usize = 16;
+
+    if bytes.len() < HEADER ||
+        &bytes[0..8] != b"B14MREF1"
+    {
+        return Err(
+            Error::from_reason(
+                "Invalid B14M strict reference header.",
+            ),
+        );
+    }
+
+    let mut count_bytes =
+        [0_u8; 8];
+
+    count_bytes.copy_from_slice(
+        &bytes[8..16]
+    );
+
+    let count =
+        u64::from_le_bytes(
+            count_bytes
+        ) as usize;
+
+    let expected =
+        HEADER +
+        count * 8 +
+        count * 4;
+
+    if count != jobs ||
+        bytes.len() != expected
+    {
+        return Err(
+            Error::from_reason(
+                format!(
+                    "Strict reference shape mismatch: jobs={jobs} reference={count} bytes={} expected={expected}",
+                    bytes.len(),
+                ),
+            ),
+        );
+    }
+
+    let cut_base = HEADER;
+    let status_base =
+        HEADER + jobs * 8;
+
+    let mut checksum =
+        1469598103934665603_u64;
+
+    let mut status_mismatches =
+        0_u32;
+
+    let mut max_abs_cut_error =
+        0.0_f64;
+
+    for job in 0..jobs {
+        let value64 =
+            cuts_out[job] as f64;
+
+        blackwell_fnv1a_update(
+            &mut checksum,
+            value64,
+        );
+
+        let cut_offset =
+            cut_base +
+            job * 8;
+
+        let mut cut_bytes =
+            [0_u8; 8];
+
+        cut_bytes.copy_from_slice(
+            &bytes[
+                cut_offset
+                    ..
+                cut_offset + 8
+            ]
+        );
+
+        let strict_cut =
+            f64::from_le_bytes(
+                cut_bytes
+            );
+
+        let status_offset =
+            status_base +
+            job * 4;
+
+        let mut status_bytes =
+            [0_u8; 4];
+
+        status_bytes.copy_from_slice(
+            &bytes[
+                status_offset
+                    ..
+                status_offset + 4
+            ]
+        );
+
+        let strict_status =
+            u32::from_le_bytes(
+                status_bytes
+            );
+
+        if status_out[job] !=
+            strict_status
+        {
+            status_mismatches += 1;
+        }
+
+        max_abs_cut_error =
+            max_abs_cut_error.max(
+                (
+                    value64 -
+                    strict_cut
+                ).abs()
+            );
+    }
+
+    Ok(
+        BlackwellB14oRoundtripResult {
+            pinned_input,
+            wait_mode,
+            mapped_output,
+            schedule_spin,
+            annual_step_count:
+                step_count as u32,
+            tank_count:
+                snapshot.tank_count as u32,
+            causal_jobs:
+                jobs as u32,
+            static_h2d_ms,
+            host_pack_ms,
+            input_enqueue_ms,
+            kernel_ms,
+            result_wait_ms,
+            wall_ms,
+            checksum_hex:
+                format!(
+                    "{checksum:016x}"
+                ),
+            status_mismatches_vs_strict:
+                status_mismatches,
+            max_abs_cut_error_vs_strict:
+                max_abs_cut_error,
+        },
+    )
+}
+// SUNOPT_BLACKWELL_B14O_ROUNDTRIP_FN_END
+
+// SUNOPT_BLACKWELL_B14G_WARP_BINARY_FN_BEGIN
+#[napi]
+pub fn run_blackwell_b14g_warp_binary(
+    snapshot_path: Option<String>,
+    sample_steps: Option<u32>,
+    repetitions: Option<u32>,
+    device_id: Option<i32>,
+) -> Result<BlackwellB14fWarpPrecheckResult> {
+    let path =
+        snapshot_path
+            .map(PathBuf::from)
+            .unwrap_or_else(blackwell_default_snapshot_path);
+
+    let snapshot =
+        read_blackwell_snapshot(&path)
+            .map_err(|error| {
+                Error::from_reason(
+                    format!(
+                        "Unable to read Blackwell snapshot {}: {error}",
+                        path.display(),
+                    ),
+                )
+            })?;
+
+    if snapshot.steps.is_empty() || snapshot.tank_count == 0 {
+        return Err(Error::from_reason("Blackwell snapshot is empty."));
+    }
+
+    let requested_samples =
+        sample_steps
+            .unwrap_or(2048)
+            .clamp(2, snapshot.steps.len() as u32)
+            as usize;
+
+    let mut sample_positions = Vec::<usize>::with_capacity(requested_samples);
+    for sample in 0..requested_samples {
+        let position =
+            sample * (snapshot.steps.len() - 1) /
+            (requested_samples - 1);
+        if sample_positions.last().copied() != Some(position) {
+            sample_positions.push(position);
+        }
+    }
+
+    let tank_parameters =
+        (0..snapshot.tank_count)
+            .map(|tank| research_tank_from_packed(&snapshot.packed_config, tank))
+            .collect::<Vec<_>>();
+
+    let mut packed_tanks = Vec::<f64>::with_capacity(snapshot.tank_count * 6);
+    for tank in &tank_parameters {
+        packed_tanks.extend_from_slice(&[
+            tank.target_storage_energy,
+            tank.maximum_heat_pump_electrical_power,
+            tank.cop * tank.time_step_hours,
+            tank.heat_loss_retention,
+            tank.heat_loss_intercept,
+            if tank.affine_supported { 1.0 } else { 0.0 },
+        ]);
+    }
+
+    let jobs = sample_positions.len() * snapshot.tank_count;
+    let mut current_indices = Vec::<u32>::with_capacity(sample_positions.len());
+    let mut horizons = Vec::<u32>::with_capacity(sample_positions.len());
+    let mut dynamic_values = Vec::<f64>::with_capacity(jobs * 2);
+    let mut energy_cut_levels = Vec::<f64>::with_capacity(jobs);
+    let mut references = Vec::<ResearchCausalResult>::with_capacity(jobs);
+
+    let reference_started = Instant::now();
+    for &position in &sample_positions {
+        let step = &snapshot.steps[position];
+        current_indices.push(step.current_index);
+        horizons.push(step.horizon_steps);
+
+        let export_window =
+            research_window(
+                &snapshot.export_power,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+        let demand_window =
+            research_window(
+                &snapshot.demand_energy,
+                step.current_index as usize,
+                step.horizon_steps as usize,
+            );
+
+        for tank_index in 0..snapshot.tank_count {
+            let base = tank_index * BLACKWELL_DYNAMIC_STRIDE;
+            let tank = tank_parameters[tank_index];
+            let current = step.dynamic[base + 0];
+            let reserve = step.dynamic[base + 1];
+            let requested = step.dynamic[base + 2];
+
+            dynamic_values.push(current);
+            dynamic_values.push(reserve);
+            energy_cut_levels.push(
+                research_energy_cut_level(&export_window, requested, tank),
+            );
+            references.push(
+                research_run_scalar(
+                    &export_window,
+                    &demand_window,
+                    current,
+                    reserve,
+                    requested,
+                    tank,
+                ),
+            );
+        }
+    }
+    let reference_scalar_ms =
+        reference_started.elapsed().as_secs_f64() * 1000.0;
+
+    let repetition_count = repetitions.unwrap_or(1).clamp(1, 20);
+    let selected_device = device_id.unwrap_or(0);
+    let mut cuts = vec![0.0_f64; jobs];
+    let mut status = vec![0_u32; jobs];
+    let mut max_segments = vec![0_u32; jobs];
+    let mut max_work_segments = vec![0_u32; jobs];
+    let mut input_h2d_ms = 0.0_f64;
+    let mut kernel_total_ms = 0.0_f64;
+    let mut result_d2h_ms = 0.0_f64;
+    let mut wall_ms = 0.0_f64;
+
+    let code = unsafe {
+        sunopt_cuda_run_b14g_warp_binary_benchmark(
+            selected_device as c_int,
+            snapshot.export_power.as_ptr(),
+            snapshot.demand_energy.as_ptr(),
+            snapshot.data_length,
+            packed_tanks.as_ptr(),
+            snapshot.tank_count,
+            current_indices.as_ptr(),
+            horizons.as_ptr(),
+            dynamic_values.as_ptr(),
+            energy_cut_levels.as_ptr(),
+            sample_positions.len(),
+            repetition_count,
+            cuts.as_mut_ptr(),
+            status.as_mut_ptr(),
+            max_segments.as_mut_ptr(),
+            max_work_segments.as_mut_ptr(),
+            &mut input_h2d_ms,
+            &mut kernel_total_ms,
+            &mut result_d2h_ms,
+            &mut wall_ms,
+        )
+    };
+
+    if code != 0 {
+        return Err(cuda_error("sunopt_cuda_run_b14g_warp_binary_benchmark", code));
+    }
+
+    let mut supported_jobs = 0_u32;
+    let mut unsupported_jobs = 0_u32;
+    let mut overflow_32_jobs = 0_u32;
+    let mut scratch_overflow_jobs = 0_u32;
+    let mut status_mismatches = 0_u32;
+    let mut cut_mismatches_1e12 = 0_u32;
+    let mut cut_mismatches_1e9 = 0_u32;
+    let mut cut_mismatches_1e6 = 0_u32;
+    let mut max_abs_cut_error = 0.0_f64;
+    let mut sum_abs_cut_error = 0.0_f64;
+    let mut compared_cuts = 0_u32;
+    let mut checksum = 1469598103934665603_u64;
+
+    for job in 0..jobs {
+        if status[job] == 3 {
+            unsupported_jobs += 1;
+        } else {
+            supported_jobs += 1;
+        }
+        if status[job] == 4 {
+            overflow_32_jobs += 1;
+        }
+        if status[job] == 5 {
+            scratch_overflow_jobs += 1;
+        }
+
+        let expected_status =
+            if references[job].normal_plan_survives {
+                0_u32
+            } else if !references[job].maximum_pv_plan_survives {
+                1_u32
+            } else {
+                2_u32
+            };
+
+        if status[job] != expected_status {
+            status_mismatches += 1;
+        }
+
+        if status[job] <= 2 && expected_status <= 2 {
+            let error =
+                (cuts[job] - references[job].cut_level_power).abs();
+            max_abs_cut_error = max_abs_cut_error.max(error);
+            sum_abs_cut_error += error;
+            compared_cuts += 1;
+            if error > 1.0e-12 { cut_mismatches_1e12 += 1; }
+            if error > 1.0e-9 { cut_mismatches_1e9 += 1; }
+            if error > 1.0e-6 { cut_mismatches_1e6 += 1; }
+        }
+
+        blackwell_fnv1a_update(&mut checksum, cuts[job]);
+    }
+
+    let kernel_ms = kernel_total_ms / repetition_count as f64;
+    let annual_projected_kernel_ms =
+        kernel_ms * snapshot.steps.len() as f64 /
+        sample_positions.len() as f64;
+
+    Ok(BlackwellB14fWarpPrecheckResult {
+        snapshot_path: path.display().to_string(),
+        device_id: selected_device,
+        repetitions: repetition_count,
+        annual_step_count: snapshot.steps.len() as u32,
+        sample_step_count: sample_positions.len() as u32,
+        sample_job_count: jobs as u32,
+        supported_jobs,
+        unsupported_jobs,
+        overflow_32_jobs,
+        scratch_overflow_jobs,
+        reference_scalar_ms,
+        input_h2d_ms,
+        kernel_total_ms,
+        kernel_ms,
+        result_d2h_ms,
+        wall_ms,
+        annual_projected_kernel_ms,
+        status_mismatches,
+        cut_mismatches_1e12,
+        cut_mismatches_1e9,
+        cut_mismatches_1e6,
+        max_abs_cut_error,
+        mean_abs_cut_error:
+            if compared_cuts > 0 {
+                sum_abs_cut_error / compared_cuts as f64
+            } else {
+                0.0
+            },
+        max_segments_gpu: max_segments.iter().copied().max().unwrap_or(0),
+        max_work_segments_gpu:
+            max_work_segments.iter().copied().max().unwrap_or(0),
+        checksum_hex: format!("{checksum:016x}"),
+    })
+}
+// SUNOPT_BLACKWELL_B14G_WARP_BINARY_FN_END
+
+
+#[napi]
+pub fn test_cuda_context(
+    device_id:
+        Option<i32>,
+) -> Result<
+    CudaContextStatus
+> {
+    let mut context =
+        CudaSimulationContext::new(
+            device_id.unwrap_or(0),
+        )?;
+
+    context.synchronize()?;
+
+    Ok(
+        CudaContextStatus {
+            device_id:
+                context.device_id()?,
+
+            stream_ready:
+                true,
+        },
+    )
+}
+
+#[napi]
+pub fn test_cuda_buffers(
+    input_bytes:
+        u32,
+
+    workspace_bytes:
+        u32,
+
+    result_bytes:
+        u32,
+
+    device_id:
+        Option<i32>,
+) -> Result<
+    CudaBufferStatus
+> {
+    let mut context =
+        CudaSimulationContext::new(
+            device_id.unwrap_or(0),
+        )?;
+
+    context.reserve(
+        input_bytes as usize,
+        workspace_bytes as usize,
+        result_bytes as usize,
+    )?;
+
+    context.synchronize()?;
+
+    let capacities =
+        context.capacities()?;
+
+    Ok(
+        CudaBufferStatus {
+            device_id:
+                context.device_id()?,
+
+            input_bytes:
+                capacities.input_bytes
+                    as u32,
+
+            workspace_bytes:
+                capacities.workspace_bytes
+                    as u32,
+
+            result_bytes:
+                capacities.result_bytes
+                    as u32,
+        },
+    )
+}

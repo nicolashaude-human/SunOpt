@@ -1,0 +1,3 @@
+vec![
+  "C:\\NextJS\\SunOpt\\sunopt\\rust\\sunopt-node\\target\\x86_64-pc-windows-msvc\\release\\build\\cranelift-assembler-x64-6e9a6439c8586e9b\\out\\assembler.rs".into(),
+]

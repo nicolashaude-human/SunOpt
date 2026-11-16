@@ -1,0 +1,87 @@
+{
+  "experiment": "B13 continuous piecewise-affine synchronized",
+  "semantics": "continuous/modulating HP + max-affine storage compression + safeguarded correction",
+  "productionModified": false,
+  "snapshot": "C:\\NextJS\\SunOpt\\sunopt\\rust\\sunopt-node\\blackwell-b12-sync-blackwell.bin",
+  "sampleSteps": 192,
+  "sampleJobs": 5376,
+  "supportedJobs": 5376,
+  "unsupportedJobs": 0,
+  "correctionSearchJobs": 3639,
+  "referenceFullCausalGpuMs": 30.1858,
+  "rows": [
+    {
+      "iterations": 1,
+      "kernelMs": 6.678239822387695,
+      "annualProjectedKernelMs": 1218.7787675857544,
+      "averageEvaluationsSupported": 2.6279761904761907,
+      "maxAbsCutError": 6.080367532192457,
+      "cutErrorOver1e6": 3583,
+      "cutErrorOver1e5": 3529,
+      "cutErrorOver1e4": 3529,
+      "statusMismatches": 0,
+      "maximumBracketWidth": 6.933734595801665
+    },
+    {
+      "iterations": 2,
+      "kernelMs": 8.289312362670898,
+      "annualProjectedKernelMs": 1512.799506187439,
+      "averageEvaluationsSupported": 3.304873511904762,
+      "maxAbsCutError": 5.119282273006441,
+      "cutErrorOver1e6": 3375,
+      "cutErrorOver1e5": 2838,
+      "cutErrorOver1e4": 2838,
+      "statusMismatches": 0,
+      "maximumBracketWidth": 6.8561367340018
+    },
+    {
+      "iterations": 3,
+      "kernelMs": 9.962143898010254,
+      "annualProjectedKernelMs": 1818.0912613868713,
+      "averageEvaluationsSupported": 3.9817708333333335,
+      "maxAbsCutError": 4.96593854598999,
+      "cutErrorOver1e6": 3179,
+      "cutErrorOver1e5": 2030,
+      "cutErrorOver1e4": 2028,
+      "statusMismatches": 0,
+      "maximumBracketWidth": 4.965939540288575
+    },
+    {
+      "iterations": 4,
+      "kernelMs": 11.642208099365234,
+      "annualProjectedKernelMs": 2124.7029781341553,
+      "averageEvaluationsSupported": 4.658668154761905,
+      "maxAbsCutError": 3.850551632213593,
+      "cutErrorOver1e6": 3083,
+      "cutErrorOver1e5": 1643,
+      "cutErrorOver1e4": 1638,
+      "statusMismatches": 0,
+      "maximumBracketWidth": 4.095862241258197
+    },
+    {
+      "iterations": 6,
+      "kernelMs": 15.03548812866211,
+      "annualProjectedKernelMs": 2743.976583480835,
+      "averageEvaluationsSupported": 6.0124627976190474,
+      "maxAbsCutError": 3.332328920701413,
+      "cutErrorOver1e6": 3011,
+      "cutErrorOver1e5": 1363,
+      "cutErrorOver1e4": 1355,
+      "statusMismatches": 0,
+      "maximumBracketWidth": 3.7660508900300522
+    },
+    {
+      "iterations": 8,
+      "kernelMs": 18.447328567504883,
+      "annualProjectedKernelMs": 3366.637463569641,
+      "averageEvaluationsSupported": 7.366257440476191,
+      "maxAbsCutError": 3.332328920701413,
+      "cutErrorOver1e6": 2994,
+      "cutErrorOver1e5": 1310,
+      "cutErrorOver1e4": 1263,
+      "statusMismatches": 0,
+      "maximumBracketWidth": 3.666755646205064
+    }
+  ],
+  "bestExact": null
+}

@@ -1,0 +1,61 @@
+cargo:rerun-if-changed=cuda/cuda_context.cu
+cargo:rerun-if-changed=cuda/cuda_context.h
+cargo:rerun-if-env-changed=CUDA_PATH
+cargo:rerun-if-env-changed=SUNOPT_CUDA_ARCH
+cargo:rerun-if-env-changed=SUNOPT_CUDA_FAST_MATH
+cargo:warning=SunOpt CUDA fast math disabled
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\cuda\cuda_context.cu(16522): warning #177-D: variable "target" was declared but never referenced
+      const double target =
+                   ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\cuda\cuda_context.cu(18559): warning #177-D: variable "target" was declared but never referenced
+      const double target =
+                   ^
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\cuda\cuda_context.cu(19752): warning #177-D: variable "target" was declared but never referenced
+      const double target =
+                   ^
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\cuda\cuda_context.cu(21187): warning #177-D: variable "target" was declared but never referenced
+      const double target =
+                   ^
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\cuda\cuda_context.cu(22017): warning #177-D: variable "target" was declared but never referenced
+      const double target =
+                   ^
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\cuda\cuda_context.cu(264): warning #177-D: function "wrap_index" was declared but never referenced
+  __declspec(__device__) static inline size_t wrap_index(
+                                              ^
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\cuda\cuda_context.cu(1313): warning #177-D: function "run_one_causal" was declared but never referenced
+  __declspec(__device__) static SunoptCausalResult run_one_causal(
+                                                   ^
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\cuda\cuda_context.cu(2335): warning #177-D: function "warp_sum_u32" was declared but never referenced
+  warp_sum_u32(
+  ^
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\cuda\cuda_context.cu(3437): warning #177-D: function "sunopt_fill_causal_step_graph_params" was declared but never referenced
+  static cudaError_t sunopt_fill_causal_step_graph_params(
+                     ^
+
+C:\NextJS\SunOpt\sunopt\rust\sunopt-node\cuda\cuda_context.cu(10853): warning #177-D: variable "<unnamed>::SUNOPT_B14L_TREE_DEPTH" was declared but never referenced
+  constexpr unsigned int SUNOPT_B14L_TREE_DEPTH = 2u;
+                         ^
+
+cuda_context.cu
+cargo:rustc-link-search=native=C:\NextJS\SunOpt\sunopt\rust\sunopt-node\target\x86_64-pc-windows-msvc\release\build\sunopt-node-e832378b3f800ec3\out
+cargo:rustc-link-lib=static=sunopt_cuda
+cargo:rustc-link-search=native=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4\lib\x64
+cargo:rustc-link-lib=dylib=cudart
+cargo::rustc-check-cfg=cfg(napi_wasi_threads)
+cargo::rustc-check-cfg=cfg(napi_wasi_no_heap_sync)
+cargo:rerun-if-env-changed=DEBUG_GENERATED_CODE
+cargo:rerun-if-env-changed=TYPE_DEF_TMP_PATH
+cargo:rerun-if-env-changed=CARGO_CFG_NAPI_RS_CLI_VERSION
+cargo::rerun-if-env-changed=NAPI_DEBUG_GENERATED_CODE
+cargo::rerun-if-env-changed=NAPI_TYPE_DEF_TMP_FOLDER
+cargo::rerun-if-env-changed=NAPI_FORCE_BUILD_SUNOPT_NODE

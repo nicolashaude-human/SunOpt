@@ -1,0 +1,102 @@
+SUNOPT NVAPI BLACKWELL BENCHMARK GUARD
+generated=2026-11-06T12:53:43.741919+01:00
+gpu=0
+parentPid=2820
+targetVoltageMv=1050
+nativeVfFrequencyMHz=2865
+fanPercent=70
+curveOffsetMHz=600
+capBandPoints=8
+NvAPI_Initialize=0 (NVAPI_OK)
+NvAPI_EnumPhysicalGPUs=0 (NVAPI_OK)
+gpuName=NVIDIA GeForce RTX 5060
+vfPointsInfo=0 (NVAPI_OK)
+vfStatus=0 (NVAPI_OK)
+nativeTargetSlots=96
+clockLock.original.read=0 (NVAPI_OK)
+fanControl.original.read=0 (NVAPI_OK)
+curveControl.original.read=0 (NVAPI_OK)
+curveTarget.nativeFrequencyMHz=2865.000
+curveTarget.desiredFrequencyMHz=3465.000
+curveChangedAnchors=38
+curve.anchor=89 nativeMHz=2775.000 deltaMHz=600.000
+curve.anchor=90 nativeMHz=2790.000 deltaMHz=600.000
+curve.anchor=91 nativeMHz=2797.000 deltaMHz=600.000
+curve.anchor=92 nativeMHz=2812.000 deltaMHz=600.000
+curve.anchor=93 nativeMHz=2827.000 deltaMHz=600.000
+curve.anchor=94 nativeMHz=2842.000 deltaMHz=600.000
+curve.anchor=95 nativeMHz=2850.000 deltaMHz=600.000
+curve.anchor=96 nativeMHz=2865.000 deltaMHz=600.000
+curve.anchor=97 nativeMHz=2872.000 deltaMHz=593.000
+curve.anchor=98 nativeMHz=2887.000 deltaMHz=578.000
+curve.anchor=99 nativeMHz=2902.000 deltaMHz=563.000
+curve.anchor=100 nativeMHz=2910.000 deltaMHz=555.000
+curve.anchor=101 nativeMHz=2925.000 deltaMHz=540.000
+curve.anchor=102 nativeMHz=2932.000 deltaMHz=533.000
+curve.anchor=103 nativeMHz=2947.000 deltaMHz=518.000
+curve.anchor=104 nativeMHz=2955.000 deltaMHz=510.000
+curve.anchor=105 nativeMHz=2970.000 deltaMHz=495.000
+curve.anchor=106 nativeMHz=2977.000 deltaMHz=488.000
+curve.anchor=107 nativeMHz=2992.000 deltaMHz=473.000
+curve.anchor=108 nativeMHz=3000.000 deltaMHz=465.000
+curve.anchor=109 nativeMHz=3007.000 deltaMHz=458.000
+curve.anchor=110 nativeMHz=3022.000 deltaMHz=443.000
+curve.anchor=111 nativeMHz=3030.000 deltaMHz=435.000
+curve.anchor=112 nativeMHz=3037.000 deltaMHz=428.000
+curve.anchor=113 nativeMHz=3052.000 deltaMHz=413.000
+curve.anchor=114 nativeMHz=3060.000 deltaMHz=405.000
+curve.anchor=115 nativeMHz=3067.000 deltaMHz=398.000
+curve.anchor=116 nativeMHz=3082.000 deltaMHz=383.000
+curve.anchor=117 nativeMHz=3090.000 deltaMHz=375.000
+curve.anchor=118 nativeMHz=3097.000 deltaMHz=368.000
+curve.anchor=119 nativeMHz=3105.000 deltaMHz=360.000
+curve.anchor=120 nativeMHz=3120.000 deltaMHz=345.000
+curve.anchor=121 nativeMHz=3127.000 deltaMHz=338.000
+curve.anchor=122 nativeMHz=3135.000 deltaMHz=330.000
+curve.anchor=123 nativeMHz=3142.000 deltaMHz=323.000
+curve.anchor=124 nativeMHz=3150.000 deltaMHz=315.000
+curve.anchor=125 nativeMHz=3157.000 deltaMHz=308.000
+curve.anchor=126 nativeMHz=3172.000 deltaMHz=293.000
+curveControl.set=0 (NVAPI_OK)
+curveControl.readback=0 (NVAPI_OK)
+curveControl.targetAnchor=96 deltaMHz=600.000
+vfStatus.afterCurve=0 (NVAPI_OK)
+curveTarget.effectiveFrequencyMHz=3465.000
+fanControl.set=0 (NVAPI_OK)
+fanControl.readback=0 (NVAPI_OK)
+fanControl.entry=0 index=1 level=70 mode=1
+fanControl.entry=1 index=2 level=70 mode=1
+clockLock.set=0 (NVAPI_OK)
+clockLock.readback=0 (NVAPI_OK)
+clockLock.index=6 mode=3 voltageMv=1050.000
+fanRamp fan=0% temp=40C clock=210MHz
+fanRamp fan=30% temp=40C clock=210MHz
+fanRamp fan=36% temp=42C clock=3457MHz
+fanRamp fan=44% temp=42C clock=3457MHz
+fanRamp fan=51% temp=42C clock=3375MHz
+fanRamp fan=56% temp=42C clock=3375MHz
+fanRamp fan=59% temp=42C clock=3420MHz
+fanRamp fan=61% temp=42C clock=3420MHz
+fanRamp fan=63% temp=42C clock=3442MHz
+fanRamp fan=64% temp=42C clock=3442MHz
+fanRamp fan=65% temp=42C clock=3450MHz
+fanRamp fan=66% temp=42C clock=3457MHz
+fanRamp fan=67% temp=42C clock=3457MHz
+fanRamp fan=68% temp=42C clock=3457MHz
+fanRamp fan=68% temp=42C clock=3457MHz
+guardState=READY
+guardStopReason=STOP_FILE
+--- RESTORE ORIGINAL GPU CONTROLS ---
+clockLock.restore.set=0 (NVAPI_OK)
+clockLock.restore.read=0 (NVAPI_OK)
+clockLock.restore.index=6 mode=0 voltageMv=0.000
+curveControl.restore.set=0 (NVAPI_OK)
+curveControl.restore.read=0 (NVAPI_OK)
+curveControl.restore.exactMatch=True
+fanControl.restore.set=0 (NVAPI_OK)
+fanControl.restore.read=0 (NVAPI_OK)
+fanControl.restore.entry=0 index=1 level=0 mode=0
+fanControl.restore.entry=1 index=2 level=0 mode=0
+NvAPI_Unload=0 (NVAPI_OK)
+guardExitCode=0
+restoreOk=True

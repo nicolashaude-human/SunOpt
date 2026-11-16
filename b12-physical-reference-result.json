@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "binaryPath": "C:\\NextJS\\SunOpt\\sunopt\\rust\\sunopt-node\\blackwell-physical-reference.bin",
+  "metadataPath": "C:\\NextJS\\SunOpt\\sunopt\\rust\\sunopt-node\\blackwell-physical-reference.json",
+  "stepCount": 35040,
+  "tankCount": 28,
+  "fieldCount": 24,
+  "binaryBytes": 188375304,
+  "coupledPath": "C:\\NextJS\\SunOpt\\sunopt\\rust\\sunopt-node\\blackwell-b12-coupled-reference.bin",
+  "coupledMetadataPath": "C:\\NextJS\\SunOpt\\sunopt\\rust\\sunopt-node\\blackwell-b12-coupled-reference.json",
+  "coupledBytes": 63352592,
+  "totalDurationMs": 160773.5523
+}

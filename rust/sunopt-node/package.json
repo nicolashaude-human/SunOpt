@@ -1,0 +1,20 @@
+{
+  "name": "sunopt-node",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.10.8"
+  },
+  "napi": {
+    "binaryName": "sunopt_node",
+    "targets": [
+      "x86_64-pc-windows-msvc"
+    ]
+  }
+}

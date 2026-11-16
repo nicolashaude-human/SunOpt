@@ -1,0 +1,53 @@
+SUNOPT NVAPI BLACKWELL BENCHMARK GUARD
+generated=2026-11-06T12:09:21.114234+01:00
+gpu=0
+parentPid=13704
+targetVoltageMv=1100
+nativeVfFrequencyMHz=2955
+fanPercent=70
+NvAPI_Initialize=0 (NVAPI_OK)
+NvAPI_EnumPhysicalGPUs=0 (NVAPI_OK)
+gpuName=NVIDIA GeForce RTX 5060
+vfPointsInfo=0 (NVAPI_OK)
+vfStatus=0 (NVAPI_OK)
+nativeTargetSlots=104
+clockLock.original.read=0 (NVAPI_OK)
+fanControl.original.read=0 (NVAPI_OK)
+fanControl.set=0 (NVAPI_OK)
+fanControl.readback=0 (NVAPI_OK)
+fanControl.entry=0 index=1 level=70 mode=1
+fanControl.entry=1 index=2 level=70 mode=1
+clockLock.set=0 (NVAPI_OK)
+clockLock.readback=0 (NVAPI_OK)
+clockLock.index=6 mode=3 voltageMv=1100.000
+fanRamp fan=61% temp=39C clock=2857MHz
+fanRamp fan=46% temp=39C clock=2880MHz
+fanRamp fan=42% temp=39C clock=2880MHz
+fanRamp fan=43% temp=39C clock=2880MHz
+fanRamp fan=46% temp=39C clock=2880MHz
+fanRamp fan=49% temp=39C clock=2880MHz
+fanRamp fan=52% temp=39C clock=2880MHz
+fanRamp fan=55% temp=39C clock=2880MHz
+fanRamp fan=58% temp=39C clock=2880MHz
+fanRamp fan=60% temp=39C clock=2880MHz
+fanRamp fan=62% temp=39C clock=2880MHz
+fanRamp fan=63% temp=39C clock=2880MHz
+fanRamp fan=65% temp=39C clock=2880MHz
+fanRamp fan=66% temp=39C clock=2880MHz
+fanRamp fan=66% temp=39C clock=2880MHz
+fanRamp fan=67% temp=39C clock=2880MHz
+fanRamp fan=67% temp=39C clock=2880MHz
+fanRamp fan=68% temp=39C clock=2880MHz
+guardState=READY
+guardStopReason=STOP_FILE
+--- RESTORE ORIGINAL GPU CONTROLS ---
+clockLock.restore.set=0 (NVAPI_OK)
+clockLock.restore.read=0 (NVAPI_OK)
+clockLock.restore.index=6 mode=0 voltageMv=0.000
+fanControl.restore.set=0 (NVAPI_OK)
+fanControl.restore.read=0 (NVAPI_OK)
+fanControl.restore.entry=0 index=1 level=0 mode=0
+fanControl.restore.entry=1 index=2 level=0 mode=0
+NvAPI_Unload=0 (NVAPI_OK)
+guardExitCode=0
+restoreOk=True

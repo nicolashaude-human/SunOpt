@@ -1,0 +1,20 @@
+export interface SimulationResult {
+  optimalStorageVolume: number;
+
+  variants: StorageSimulationResult[];
+}
+
+export interface StorageSimulationResult {
+  storageVolume: number;       // L
+
+  pvProduction: number;        // kWh/a
+  pvSelfConsumption: number;   // 0 ... 1
+
+  gridImport: number;          // kWh/a
+
+  heatPumpConsumption: number; // kWh/a
+
+  storageLosses: number;       // kWh/a
+
+  annualCost: number;          // CHF/a
+}
