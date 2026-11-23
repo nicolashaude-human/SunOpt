@@ -29,20 +29,20 @@ export function MetricBoxRowContainer({
 
   return (
     <section
-      className="rounded-2xl border border-[#dfcfb7] bg-[#fffaf2] p-4 shadow-sm"
+      className="rounded-2xl border border-[var(--sunopt-border)] bg-[var(--sunopt-bg)] p-4 shadow-sm"
     >
       <div
         className="mb-4 flex flex-wrap items-baseline justify-between gap-2"
       >
         <h3
-          className="text-lg font-bold text-gray-950"
+          className="text-lg font-bold text-[var(--sunopt-ink)]"
         >
           {title}
         </h3>
 
         {eyebrow && (
           <div
-            className="text-xs font-semibold uppercase tracking-wide text-[#8b7355]"
+            className="text-xs font-semibold uppercase tracking-wide text-[var(--sunopt-muted)]"
           >
             {eyebrow}
           </div>

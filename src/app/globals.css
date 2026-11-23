@@ -1,26 +1,32 @@
 @import "tailwindcss" source("..");
 
+/* Shared tokens and surfaces are served by /styles/sunopt-theme.css
+   and loaded in the root layout; also reused by static HTML pages. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #fffaf2;
+  --foreground: #1f1f1f;
 }
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-background: var(--sunopt-bg, var(--background));
+  --color-foreground: var(--sunopt-ink, var(--foreground));
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--sunopt-page, var(--background));
+  color: var(--sunopt-ink, var(--foreground));
+  font-family: Arial, Helvetica, sans-serif;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+body:has(> .sunopt-presentation-shell) {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100dvh;
+}
+
+.sunopt-presentation-shell {
+  min-width: 0;
+  min-height: 0;
 }

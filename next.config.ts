@@ -8,6 +8,8 @@ import type {
 const nextConfig:
   NextConfig = {
 
+  allowedDevOrigins: ["172.24.4.107"],
+
   // ------------------------------------------------------------
   // Native SunOpt N-API binding
   //

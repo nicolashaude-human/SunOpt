@@ -14,7 +14,7 @@ import type {
 
 
 export function calculateAnnualHeatingDemand(
-  building: Building,
+  building: Pick<Building, "heatedArea" | "specificHeatingDemand">,
 ): number {
 
   if (building.heatedArea <= 0) {
@@ -39,7 +39,10 @@ export function calculateAnnualHeatingDemand(
 
 
 export function calculateSpaceHeatingProfile(
-  building: Building,
+  building: Pick<
+    Building,
+    "heatedArea" | "specificHeatingDemand" | "indoorTemperature" | "heatingLimitTemperature"
+  >,
   weatherData: WeatherData,
 ): SpaceHeatingData {
 

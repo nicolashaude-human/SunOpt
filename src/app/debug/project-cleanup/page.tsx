@@ -21,6 +21,15 @@ import type {
 } from "@/lib/project-cleanup/types";
 
 
+interface ScanOutboxConfirmation {
+  saved: true;
+  directory: string;
+  llmManifest: string;
+  candidateManifest: string;
+  jsonReport: string;
+}
+
+
 interface ProcessStepProps {
   done: boolean;
   button: ReactNode;
@@ -94,8 +103,8 @@ function ProcessStep({
       className="
         grid grid-cols-[auto_minmax(180px,230px)_1fr]
         items-center gap-4
-        rounded-xl border border-gray-200
-        bg-white p-4
+        rounded-xl border border-[var(--sunopt-border-soft)]
+        bg-[var(--sunopt-card)] p-4
       "
     >
       <StatusLed
@@ -110,7 +119,7 @@ function ProcessStep({
 
       <div>
         <div
-          className="font-semibold text-gray-950"
+          className="font-semibold text-[var(--sunopt-ink)]"
         >
           {title}
         </div>
@@ -118,7 +127,7 @@ function ProcessStep({
         <div
           className="
             mt-1 text-sm leading-6
-            text-gray-600
+            text-[var(--sunopt-muted)]
           "
         >
           {description}
@@ -140,7 +149,7 @@ function ProcessInstruction({
       className="
         ml-3 border-l-2 border-dashed
         border-gray-300 py-3 pl-8
-        text-sm leading-6 text-gray-600
+        text-sm leading-6 text-[var(--sunopt-muted)]
       "
     >
       {children}
@@ -230,7 +239,7 @@ async function readJsonResponse<T>(
 const PRIMARY_BUTTON =
   `
     w-full rounded-lg border border-gray-800
-    bg-gray-900 px-4 py-2.5
+    bg-[var(--sunopt-ink)] px-4 py-2.5
     text-sm font-semibold text-white
     shadow-sm transition
     hover:bg-gray-700
@@ -243,10 +252,10 @@ const PRIMARY_BUTTON =
 const SECONDARY_BUTTON =
   `
     w-full rounded-lg border border-gray-300
-    bg-white px-3 py-2
+    bg-[var(--sunopt-card)] px-3 py-2
     text-sm font-semibold text-gray-800
     shadow-sm transition
-    hover:bg-gray-50
+    hover:bg-[var(--sunopt-page)]
     disabled:cursor-not-allowed
     disabled:text-gray-400
   `;
@@ -263,6 +272,17 @@ export default function ProjectCleanupPage() {
     >(
       null,
     );
+
+
+  const [
+    scanOutbox,
+    setScanOutbox,
+  ] = useState<ScanOutboxConfirmation | null>(null);
+
+  const [
+    scanRunning,
+    setScanRunning,
+  ] = useState(false);
 
 
   const [
@@ -528,57 +548,77 @@ export default function ProjectCleanupPage() {
 
   async function scanProject(): Promise<void> {
 
-    await perform(
-      async () => {
+    // Reset the previous green status when starting another scan.
+    setScanRunning(true);
+    setScanResponse(null);
+    setScanOutbox(null);
+    setManifestDownloaded(false);
 
-        const response =
-          await fetch(
+    try {
+      await perform(async () => {
+        // A busy Windows file can transiently fail to open while Next.js,
+        // antivirus or the native runtime still holds a handle. The scan
+        // endpoint is read-only apart from its outbox reports, so retry ONCE
+        // only for EBUSY. Never retry cleanup/delete/apply operations.
+        let payload: ProjectScanResponse & { outbox?: ScanOutboxConfirmation } | null = null;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const response = await fetch(
             "/api/debug/project-cleanup/scan",
-            {
-              method:
-                "POST",
-            },
+            { method: "POST", cache: "no-store" },
           );
+          try {
+            payload = await readJsonResponse<
+              ProjectScanResponse & { outbox?: ScanOutboxConfirmation }
+            >(response);
+            break;
+          } catch (caught) {
+            const cause = caught instanceof Error ? caught.message : String(caught);
+            const busy = /\bEBUSY\b|resource busy|locked, read/i.test(cause);
+            if (busy && attempt === 0) {
+              await new Promise<void>((resolve) => setTimeout(resolve, 350));
+              continue;
+            }
+            if (busy) {
+              throw new Error(
+                "Project Cleanup: EBUSY – ein Dateihandle ist weiterhin gesperrt. " +
+                "Der Scan wurde einmal verzögert wiederholt. " +
+                "Für die genaue Ursache RUN_SUNOPT_CLEANUP_EBUSY_DIAGNOSTIC.cmd ausführen. " +
+                `Serverfehler: ${cause}`,
+              );
+            }
+            throw caught;
+          }
+        }
+        if (!payload) throw new Error("Project Cleanup: kein Scannergebnis empfangen.");
 
-
-        const payload =
-          await readJsonResponse<
-            ProjectScanResponse
-          >(
-            response,
+        if (
+          payload.outbox?.saved !== true ||
+          !payload.outbox.llmManifest ||
+          !payload.outbox.candidateManifest ||
+          !payload.outbox.jsonReport
+        ) {
+          throw new Error(
+            "Scan abgeschlossen, aber kein vollständiger Bericht in updates/outbox bestätigt.",
           );
+        }
 
-
-        setScanResponse(
-          payload,
-        );
-
-        setCleanupPlan(
-          null,
-        );
-
-        setSelectedPaths(
-          new Set(),
-        );
-
-        setManifestDownloaded(
-          false,
-        );
-
-        setFilesDeleted(
-          false,
-        );
-
-        setCleanupCommitted(
-          false,
-        );
-
+        // These updates activate the EXISTING green LED and download rim.
+        setScanResponse(payload);
+        setScanOutbox(payload.outbox);
+        setCleanupPlan(null);
+        setSelectedPaths(new Set());
+        setFilesDeleted(false);
+        setCleanupCommitted(false);
 
         setMessage(
-          `Scan complete: ${payload.scan.summary.files} files, ${payload.scan.summary.candidates} cleanup candidates.`,
+          `Scan erfolgreich: ${payload.scan.summary.files} Dateien, ` +
+          `${payload.scan.summary.candidates} Kandidaten. ` +
+          `Bericht gespeichert: ${payload.outbox.llmManifest}`,
         );
-      },
-    );
+      });
+    } finally {
+      setScanRunning(false);
+    }
   }
 
 
@@ -987,7 +1027,7 @@ export default function ProjectCleanupPage() {
   return (
     <main
       className="
-        min-h-screen bg-gray-50
+        min-h-screen sunopt-page
         px-4 py-8 sm:px-6
       "
     >
@@ -1000,7 +1040,7 @@ export default function ProjectCleanupPage() {
           <div
             className="
               text-sm font-semibold uppercase
-              tracking-[0.18em] text-gray-500
+              tracking-[0.18em] text-[var(--sunopt-soft-text)]
             "
           >
             SunOpt developer tools
@@ -1009,7 +1049,7 @@ export default function ProjectCleanupPage() {
           <h1
             className="
               mt-2 text-3xl font-bold
-              tracking-tight text-gray-950
+              tracking-tight text-[var(--sunopt-ink)]
             "
           >
             Project Cleanup
@@ -1018,7 +1058,7 @@ export default function ProjectCleanupPage() {
           <p
             className="
               mt-3 max-w-3xl
-              leading-7 text-gray-600
+              leading-7 text-[var(--sunopt-muted)]
             "
           >
             Guided dependency cleanup with
@@ -1036,7 +1076,7 @@ export default function ProjectCleanupPage() {
         >
           <section
             className="
-              rounded-2xl border border-gray-200
+              rounded-2xl border border-[var(--sunopt-border-soft)]
               bg-gray-100/70 p-4 shadow-sm
               sm:p-5
             "
@@ -1051,7 +1091,7 @@ export default function ProjectCleanupPage() {
                 <h2
                   className="
                     text-xl font-bold
-                    text-gray-950
+                    text-[var(--sunopt-ink)]
                   "
                 >
                   Cleanup process
@@ -1059,7 +1099,7 @@ export default function ProjectCleanupPage() {
 
                 <p
                   className="
-                    mt-1 text-sm text-gray-600
+                    mt-1 text-sm text-[var(--sunopt-muted)]
                   "
                 >
                   Green LEDs show completed
@@ -1078,9 +1118,9 @@ export default function ProjectCleanupPage() {
                 }
                 className="
                   rounded-lg border border-gray-300
-                  bg-white px-3 py-2
-                  text-xs font-semibold text-gray-700
-                  shadow-sm hover:bg-gray-50
+                  bg-[var(--sunopt-card)] px-3 py-2
+                  text-xs font-semibold text-[var(--sunopt-muted)]
+                  shadow-sm hover:bg-[var(--sunopt-page)]
                   disabled:text-gray-400
                 "
               >
@@ -1090,28 +1130,25 @@ export default function ProjectCleanupPage() {
 
 
             <ProcessStep
-              done={
-                scanResponse !==
-                null
-              }
+              done={scanOutbox !== null}
               button={
                 <button
                   type="button"
-                  disabled={
-                    busy
-                  }
-                  onClick={
-                    scanProject
-                  }
-                  className={
-                    PRIMARY_BUTTON
-                  }
+                  disabled={busy}
+                  onClick={scanProject}
+                  className={PRIMARY_BUTTON}
                 >
-                  Scan Project
+                  {scanRunning
+                    ? "Scan läuft ..."
+                    : scanOutbox
+                      ? "✓ Scan erfolgreich"
+                      : "Scan Project"}
                 </button>
               }
               title="Create dependency snapshot"
-              description="Reads the project tree, resolves local imports and produces a scan ID tied to this exact source state."
+              description={scanOutbox
+                ? `Bericht gespeichert: ${scanOutbox.llmManifest}`
+                : "Reads the project tree, resolves local imports and produces a scan ID tied to this exact source state."}
             />
 
 
@@ -1173,14 +1210,14 @@ export default function ProjectCleanupPage() {
               <div
                 className="
                   my-3 ml-11 rounded-xl
-                  border border-gray-200
-                  bg-white p-4
+                  border border-[var(--sunopt-border-soft)]
+                  bg-[var(--sunopt-card)] p-4
                 "
               >
                 <div
                   className="
                     mb-3 text-sm font-semibold
-                    text-gray-900
+                    text-[var(--sunopt-ink)]
                   "
                 >
                   Files proposed for OLD quarantine
@@ -1205,7 +1242,7 @@ export default function ProjectCleanupPage() {
                           items-start gap-3
                           rounded-lg border
                           border-gray-100 p-2
-                          hover:bg-gray-50
+                          hover:bg-[var(--sunopt-page)]
                         "
                       >
                         <input
@@ -1228,7 +1265,7 @@ export default function ProjectCleanupPage() {
                           <code
                             className="
                               text-xs font-semibold
-                              text-gray-900
+                              text-[var(--sunopt-ink)]
                             "
                           >
                             {action.path}
@@ -1237,7 +1274,7 @@ export default function ProjectCleanupPage() {
                           <span
                             className="
                               mt-1 block text-xs
-                              leading-5 text-gray-500
+                              leading-5 text-[var(--sunopt-soft-text)]
                             "
                           >
                             {action.reason}
@@ -1404,7 +1441,7 @@ export default function ProjectCleanupPage() {
               <div
                 className="
                   mt-5 rounded-xl border
-                  border-gray-200 bg-gray-950
+                  border-[var(--sunopt-border-soft)] bg-gray-950
                   p-4 font-mono text-xs
                   leading-5 text-gray-200
                 "
@@ -1463,15 +1500,15 @@ export default function ProjectCleanupPage() {
 
           <aside
             className="
-              rounded-2xl border border-gray-200
-              bg-white p-4 shadow-sm
+              rounded-2xl border border-[var(--sunopt-border-soft)]
+              bg-[var(--sunopt-card)] p-4 shadow-sm
               lg:sticky lg:top-24
             "
           >
             <h2
               className="
                 text-base font-bold
-                text-gray-950
+                text-[var(--sunopt-ink)]
               "
             >
               Downloads
@@ -1480,7 +1517,7 @@ export default function ProjectCleanupPage() {
             <p
               className="
                 mt-1 text-xs leading-5
-                text-gray-500
+                text-[var(--sunopt-soft-text)]
               "
             >
               Compact exports from the current
@@ -1491,7 +1528,7 @@ export default function ProjectCleanupPage() {
             <div
               className={[
                 "mt-5 rounded-xl p-[2px]",
-                scanResponse &&
+                scanOutbox &&
                 !manifestDownloaded
                   ? "animate-pulse bg-green-500 shadow-[0_0_18px_rgba(34,197,94,0.55)]"
                   : "bg-gray-200",
@@ -1501,14 +1538,14 @@ export default function ProjectCleanupPage() {
             >
               <div
                 className="
-                  rounded-[10px] bg-white p-3
+                  rounded-[10px] bg-[var(--sunopt-card)] p-3
                 "
               >
                 <div
                   className="
                     mb-2 text-xs font-bold
                     uppercase tracking-wider
-                    text-gray-500
+                    text-[var(--sunopt-soft-text)]
                   "
                 >
                   For ChatGPT
@@ -1530,10 +1567,16 @@ export default function ProjectCleanupPage() {
                   Download LLM Manifest
                 </button>
 
+                {scanOutbox && (
+                  <p className="mt-2 break-all text-xs font-semibold text-green-700" role="status">
+                    ✓ Scan erfolgreich – Datei in {scanOutbox.directory} gespeichert.
+                  </p>
+                )}
+
                 <p
                   className="
                     mt-2 text-xs leading-5
-                    text-gray-500
+                    text-[var(--sunopt-soft-text)]
                   "
                 >
                   Upload this file to ChatGPT for
@@ -1631,14 +1674,14 @@ export default function ProjectCleanupPage() {
             {scanResponse && (
               <div
                 className="
-                  mt-5 rounded-lg bg-gray-50
+                  mt-5 rounded-lg bg-[var(--sunopt-page)]
                   p-3 text-xs leading-5
-                  text-gray-600
+                  text-[var(--sunopt-muted)]
                 "
               >
                 <div
                   className="
-                    font-semibold text-gray-900
+                    font-semibold text-[var(--sunopt-ink)]
                   "
                 >
                   Scan complete

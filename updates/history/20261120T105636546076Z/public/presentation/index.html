@@ -1,0 +1,36 @@
+<!-- public/presentation/index.html -->
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SunOpt Präsentation</title>
+  <link rel="stylesheet" href="/styles/sunopt-theme.css">
+  <link rel="stylesheet" href="./slides.css?v=20261030-presentation-v6">
+  <script defer src="./presentation-data.js?v=20261030-presentation-v6"></script>
+  <script defer src="./slides.js?v=20261030-presentation-v6"></script>
+  <script defer src="./drag-tabs.js"></script>
+  <script defer src="/scripts/sunopt-static-navigation.js"></script>
+</head>
+<body>
+  <div id="sunopt-static-navigation"></div>
+  <main id="presentation-app" class="presentation-app">
+    <header class="slide-navigation" aria-label="Foliennavigation">
+      <div id="slide-tabs" class="slide-tabs"></div>
+      <div class="slide-nav-actions">
+        <button id="previous-slide" type="button" class="nav-arrow" aria-label="Vorherige Folie" title="Vorherige Folie">←</button>
+        <div id="slide-counter" class="slide-counter" aria-live="polite"></div>
+        <button id="next-slide" type="button" class="nav-arrow" aria-label="Nächste Folie" title="Nächste Folie">→</button>
+      </div>
+    </header>
+    <section class="slide-viewport">
+      <div id="slide-frame" class="slide-frame" tabindex="0">
+        <div class="presentation-loading" role="status">Präsentation wird geladen …</div>
+      </div>
+    </section>
+  </main>
+  <noscript>
+    <p>Für die SunOpt-Präsentation muss JavaScript aktiviert sein.</p>
+  </noscript>
+</body>
+</html>

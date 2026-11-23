@@ -2,6 +2,8 @@
 
 "use client";
 
+import { MODEL_CHART_COLORS as MODEL_COLORS } from "@/styles/chart-palette";
+
 import {
   useState,
 } from "react";
@@ -33,19 +35,6 @@ const YEAR =
 
 const STORAGE_VOLUME =
   1000;
-
-const MODEL_COLORS:
-  Record<
-    ComparisonModelId,
-    string
-  > = {
-  existing:
-    "#FFB300",
-  quantumGravity:
-    "#803E75",
-  plasmaWave:
-    "#FF6800",
-};
 
 const MONTH_LABELS = [
   "Jan",
@@ -326,7 +315,7 @@ export default function ModelComparisonPage() {
     <main
       className="
         min-h-screen
-        bg-[#ffe1a6]
+        bg-[var(--sunopt-page)]
         px-4 py-8
         sm:px-6
       "
@@ -349,7 +338,7 @@ export default function ModelComparisonPage() {
               className="
                 text-3xl font-bold
                 tracking-tight
-                text-gray-950
+                text-[var(--sunopt-ink)]
               "
             >
               Modellvergleich
@@ -359,7 +348,7 @@ export default function ModelComparisonPage() {
               className="
                 mt-3 max-w-3xl
                 leading-7
-                text-[#ffc144]
+                text-[var(--sunopt-muted)]
               "
             >
               Jahresvergleich der
@@ -379,7 +368,7 @@ export default function ModelComparisonPage() {
             }
             className="
               rounded-lg
-              bg-gray-900
+              bg-[var(--sunopt-ink)]
               px-4 py-2.5
               text-sm font-semibold
               text-white shadow-sm
@@ -415,10 +404,10 @@ export default function ModelComparisonPage() {
             <div
               className="
                 rounded-2xl
-                border border-[#d8c5a5]
-                bg-[#ffedca]
+                border border-[var(--sunopt-border-soft)]
+                bg-[var(--sunopt-panel)]
                 p-6
-                text-[#ffc144]
+                text-[var(--sunopt-muted)]
                 shadow-sm
               "
             >
@@ -438,8 +427,8 @@ export default function ModelComparisonPage() {
             <section
               className="
                 rounded-2xl
-                border border-[#d8c5a5]
-                bg-[#ffedca]
+                border border-[var(--sunopt-border-soft)]
+                bg-[var(--sunopt-panel)]
                 p-5 shadow-sm
               "
             >
@@ -460,7 +449,7 @@ export default function ModelComparisonPage() {
                     className="
                       text-3xl font-bold
                       tracking-tight
-                      text-gray-950
+                      text-[var(--sunopt-ink)]
                     "
                   >
                     Jahreszusammenfassung

@@ -1,0 +1,436 @@
+{
+  "schema": "sunopt-presentation-year-static-v1",
+  "source": {
+    "createdAt": "2026-11-20T11:40:10.540Z",
+    "api": "POST /api/debug/hot-water",
+    "responseSha256": "effb18bad840d5b27f92c2d099aceaa622ebfeb383a8382ba2226415ff086cc8",
+    "year": 2023,
+    "storageVolume": 3000,
+    "dataPoints": 35040,
+    "timeStepMinutes": 15,
+    "simulationDurationMs": 8684.74170000013,
+    "modelSet": "existing, quantumGravity, plasmaWave"
+  },
+  "parameters": {
+    "postalCode": "8001",
+    "year": 2023,
+    "pvSystem": {
+      "peakPower": 10,
+      "azimuth": 0,
+      "inclination": 30,
+      "systemLoss": 0.14
+    },
+    "hotWaterDemand": {
+      "persons": 2,
+      "dailyConsumptionPerPerson": 50,
+      "coldWaterTemperature": 10,
+      "deliveryTemperature": 60
+    },
+    "heatPump": {
+      "thermalPower": 5,
+      "maxFlowTemperature": 75,
+      "copModel": {
+        "type": "constant",
+        "cop": 3
+      }
+    },
+    "storage": {
+      "volume": 3000,
+      "minTemperature": 60,
+      "maxTemperature": 75,
+      "initialTemperature": 60,
+      "insulation": {
+        "thermalConductivity": 0.03,
+        "thickness": 0.1,
+        "cylinderHeight": 1.7,
+        "ambientTemperature": 20
+      }
+    },
+    "control": {
+      "minimumReserveHours": 2,
+      "forecastHorizonHours": 72,
+      "pvTargetTemperature": 75,
+      "householdReservePower": 2,
+      "forecastSafetyFactor": 1.2
+    }
+  },
+  "annual": {
+    "existing": {
+      "gridImportEnergy": 105.58103355264534,
+      "pvUsedByHeatPumpEnergy": 1053.4916859686493,
+      "heatPumpEnergy": 1159.0727195212878,
+      "storageLossEnergy": 1342.6401890837133,
+      "unmetThermalDemand": 0,
+      "temperatureSum": 2185506.7349099135,
+      "temperatureSamples": 35040
+    },
+    "quantumGravity": {
+      "gridImportEnergy": 482.3073030488136,
+      "pvUsedByHeatPumpEnergy": 350.1335218588271,
+      "heatPumpEnergy": 832.4408249077283,
+      "storageLossEnergy": 375.2530302786699,
+      "unmetThermalDemand": 0,
+      "temperatureSum": 2103158.953522969,
+      "temperatureSamples": 35040
+    },
+    "plasmaWave": {
+      "gridImportEnergy": 100.26920623323157,
+      "pvUsedByHeatPumpEnergy": 1081.8196524085147,
+      "heatPumpEnergy": 1182.08885864173,
+      "storageLossEnergy": 1410.5972253944437,
+      "unmetThermalDemand": 0,
+      "temperatureSum": 2260652.502494587,
+      "temperatureSamples": 35040
+    }
+  },
+  "months": [
+    {
+      "existing": {
+        "gridImportEnergy": 29.188671308610825,
+        "pvUsedByHeatPumpEnergy": 81.47873333333344,
+        "heatPumpEnergy": 110.66740464194453,
+        "storageLossEnergy": 117.70502583101933,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 189725.49615716093,
+        "temperatureSamples": 2976
+      },
+      "quantumGravity": {
+        "gridImportEnergy": 52.500926358948675,
+        "pvUsedByHeatPumpEnergy": 12.505538848035288,
+        "heatPumpEnergy": 65.00646520698415,
+        "storageLossEnergy": 14.788840065394892,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 178601.13405134802,
+        "temperatureSamples": 2976
+      },
+      "plasmaWave": {
+        "gridImportEnergy": 29.853973814145096,
+        "pvUsedByHeatPumpEnergy": 78.01741619058193,
+        "heatPumpEnergy": 107.87139000472727,
+        "storageLossEnergy": 117.09813476784912,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 189052.17822208893,
+        "temperatureSamples": 2976
+      }
+    },
+    {
+      "existing": {
+        "gridImportEnergy": 0,
+        "pvUsedByHeatPumpEnergy": 84.03468333676801,
+        "heatPumpEnergy": 84.03468333676801,
+        "storageLossEnergy": 107.50300320162347,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 172629.33533507728,
+        "temperatureSamples": 2688
+      },
+      "quantumGravity": {
+        "gridImportEnergy": 40.27192071417416,
+        "pvUsedByHeatPumpEnergy": 22.531252258901006,
+        "heatPumpEnergy": 62.80317297307533,
+        "storageLossEnergy": 25.620630030335903,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 161335.4754788952,
+        "temperatureSamples": 2688
+      },
+      "plasmaWave": {
+        "gridImportEnergy": 0.18003768998654437,
+        "pvUsedByHeatPumpEnergy": 87.66288401728406,
+        "heatPumpEnergy": 87.84292170727062,
+        "storageLossEnergy": 111.14656546464916,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 176660.54011354435,
+        "temperatureSamples": 2688
+      }
+    },
+    {
+      "existing": {
+        "gridImportEnergy": 2.8116209445125464,
+        "pvUsedByHeatPumpEnergy": 91.92453070224698,
+        "heatPumpEnergy": 94.73615164675951,
+        "storageLossEnergy": 113.9315717563534,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 185500.2710858373,
+        "temperatureSamples": 2976
+      },
+      "quantumGravity": {
+        "gridImportEnergy": 42.36451009276291,
+        "pvUsedByHeatPumpEnergy": 27.923027916835313,
+        "heatPumpEnergy": 70.28753800959853,
+        "storageLossEnergy": 30.63205847323856,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 178628.92749685753,
+        "temperatureSamples": 2976
+      },
+      "plasmaWave": {
+        "gridImportEnergy": 2.691379375753049,
+        "pvUsedByHeatPumpEnergy": 95.92331601529243,
+        "heatPumpEnergy": 98.6146953910454,
+        "storageLossEnergy": 120.1439094218366,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 192371.2974951039,
+        "temperatureSamples": 2976
+      }
+    },
+    {
+      "existing": {
+        "gridImportEnergy": 0.33658504375927806,
+        "pvUsedByHeatPumpEnergy": 94.22550659759534,
+        "heatPumpEnergy": 94.56209164135467,
+        "storageLossEnergy": 109.59605610754913,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 178788.90933234888,
+        "temperatureSamples": 2880
+      },
+      "quantumGravity": {
+        "gridImportEnergy": 38.80746209099686,
+        "pvUsedByHeatPumpEnergy": 30.145366967503296,
+        "heatPumpEnergy": 68.95282905850057,
+        "storageLossEnergy": 32.44182050883325,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 172857.95945386545,
+        "temperatureSamples": 2880
+      },
+      "plasmaWave": {
+        "gridImportEnergy": 0,
+        "pvUsedByHeatPumpEnergy": 99.59088279896683,
+        "heatPumpEnergy": 99.59088279896683,
+        "storageLossEnergy": 116.02268407796721,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 185897.82122573498,
+        "temperatureSamples": 2880
+      }
+    },
+    {
+      "existing": {
+        "gridImportEnergy": 1.2298920260931219,
+        "pvUsedByHeatPumpEnergy": 95.17994651388203,
+        "heatPumpEnergy": 96.40983853997518,
+        "storageLossEnergy": 111.39927154622995,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 182702.27234562227,
+        "temperatureSamples": 2976
+      },
+      "quantumGravity": {
+        "gridImportEnergy": 35.119468339685234,
+        "pvUsedByHeatPumpEnergy": 38.351664065867844,
+        "heatPumpEnergy": 73.47113240555373,
+        "storageLossEnergy": 40.1828416611035,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 178633.98751142874,
+        "temperatureSamples": 2976
+      },
+      "plasmaWave": {
+        "gridImportEnergy": 1.6653345369377348e-16,
+        "pvUsedByHeatPumpEnergy": 99.81571286976815,
+        "heatPumpEnergy": 99.81571286976815,
+        "storageLossEnergy": 119.84737097596414,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 192044.5094430993,
+        "temperatureSamples": 2976
+      }
+    },
+    {
+      "existing": {
+        "gridImportEnergy": 1.7835365155024068,
+        "pvUsedByHeatPumpEnergy": 92.10657335531896,
+        "heatPumpEnergy": 93.89010987082135,
+        "storageLossEnergy": 106.6969031537026,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 175583.34044842827,
+        "temperatureSamples": 2880
+      },
+      "quantumGravity": {
+        "gridImportEnergy": 28.67657224492276,
+        "pvUsedByHeatPumpEnergy": 44.57465425350574,
+        "heatPumpEnergy": 73.2512264984289,
+        "storageLossEnergy": 45.337012828618334,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 172871.52198293034,
+        "temperatureSamples": 2880
+      },
+      "plasmaWave": {
+        "gridImportEnergy": 0,
+        "pvUsedByHeatPumpEnergy": 95.69764011394058,
+        "heatPumpEnergy": 95.69764011394058,
+        "storageLossEnergy": 117.85130953860809,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 187916.00418081856,
+        "temperatureSamples": 2880
+      }
+    },
+    {
+      "existing": {
+        "gridImportEnergy": 1.675791921055216,
+        "pvUsedByHeatPumpEnergy": 97.36472621105347,
+        "heatPumpEnergy": 99.04051813210873,
+        "storageLossEnergy": 110.56027304589854,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 181777.0284584117,
+        "temperatureSamples": 2976
+      },
+      "quantumGravity": {
+        "gridImportEnergy": 32.060053815289244,
+        "pvUsedByHeatPumpEnergy": 42.93248143031598,
+        "heatPumpEnergy": 74.99253524560565,
+        "storageLossEnergy": 44.747050181259844,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 178637.18446561182,
+        "temperatureSamples": 2976
+      },
+      "plasmaWave": {
+        "gridImportEnergy": 0,
+        "pvUsedByHeatPumpEnergy": 102.44663218486781,
+        "heatPumpEnergy": 102.44663218486781,
+        "storageLossEnergy": 120.71022818010191,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 193000.65396657525,
+        "temperatureSamples": 2976
+      }
+    },
+    {
+      "existing": {
+        "gridImportEnergy": 1.0187987754258465,
+        "pvUsedByHeatPumpEnergy": 95.087931759829,
+        "heatPumpEnergy": 96.10673053525484,
+        "storageLossEnergy": 114.83015847227665,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 186494.83040104317,
+        "temperatureSamples": 2976
+      },
+      "quantumGravity": {
+        "gridImportEnergy": 35.68249938869961,
+        "pvUsedByHeatPumpEnergy": 37.19756363183451,
+        "heatPumpEnergy": 72.8800630205344,
+        "storageLossEnergy": 38.40963350604625,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 178637.65742656396,
+        "temperatureSamples": 2976
+      },
+      "plasmaWave": {
+        "gridImportEnergy": 0,
+        "pvUsedByHeatPumpEnergy": 98.78658211881279,
+        "heatPumpEnergy": 98.78658211881279,
+        "storageLossEnergy": 123.0221454495867,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 195553.31279388967,
+        "temperatureSamples": 2976
+      }
+    },
+    {
+      "existing": {
+        "gridImportEnergy": 0.6666088993524106,
+        "pvUsedByHeatPumpEnergy": 93.59582156846768,
+        "heatPumpEnergy": 94.26243046782008,
+        "storageLossEnergy": 107.51846995043674,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 176491.8963321611,
+        "temperatureSamples": 2880
+      },
+      "quantumGravity": {
+        "gridImportEnergy": 31.541212834360937,
+        "pvUsedByHeatPumpEnergy": 40.688129002133444,
+        "heatPumpEnergy": 72.22934183649481,
+        "storageLossEnergy": 42.27135884281611,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 172891.11230005257,
+        "temperatureSamples": 2880
+      },
+      "plasmaWave": {
+        "gridImportEnergy": 2.7755575615628914e-16,
+        "pvUsedByHeatPumpEnergy": 97.4979143756293,
+        "heatPumpEnergy": 97.4979143756293,
+        "storageLossEnergy": 116.8466068197437,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 186806.86141621697,
+        "temperatureSamples": 2880
+      }
+    },
+    {
+      "existing": {
+        "gridImportEnergy": 0.3759171032670555,
+        "pvUsedByHeatPumpEnergy": 103.46094558673293,
+        "heatPumpEnergy": 103.83686268999996,
+        "storageLossEnergy": 117.20395722477906,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 189125.6943906251,
+        "temperatureSamples": 2976
+      },
+      "quantumGravity": {
+        "gridImportEnergy": 41.34453227208318,
+        "pvUsedByHeatPumpEnergy": 29.4484973897961,
+        "heatPumpEnergy": 70.79302966187977,
+        "storageLossEnergy": 32.1485334300816,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 178627.48070976607,
+        "temperatureSamples": 2976
+      },
+      "plasmaWave": {
+        "gridImportEnergy": 3.3306690738754696e-16,
+        "pvUsedByHeatPumpEnergy": 101.6075032159611,
+        "heatPumpEnergy": 101.6075032159611,
+        "storageLossEnergy": 122.73203472081393,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 195235.02366558518,
+        "temperatureSamples": 2976
+      }
+    },
+    {
+      "existing": {
+        "gridImportEnergy": 22.770360600485883,
+        "pvUsedByHeatPumpEnergy": 71.50738437827407,
+        "heatPumpEnergy": 94.2777449787602,
+        "storageLossEnergy": 113.45335359197206,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 183052.8770684114,
+        "temperatureSamples": 2880
+      },
+      "quantumGravity": {
+        "gridImportEnergy": 50.235811952736064,
+        "pvUsedByHeatPumpEnergy": 13.073364063220463,
+        "heatPumpEnergy": 63.30917601595679,
+        "storageLossEnergy": 15.51086138120175,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 172843.05127494776,
+        "temperatureSamples": 2880
+      },
+      "plasmaWave": {
+        "gridImportEnergy": 23.820564938766214,
+        "pvUsedByHeatPumpEnergy": 70.88466997143236,
+        "heatPumpEnergy": 94.7052349101988,
+        "storageLossEnergy": 112.93468409357418,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 182479.85962967997,
+        "temperatureSamples": 2880
+      }
+    },
+    {
+      "existing": {
+        "gridImportEnergy": 43.723250414580136,
+        "pvUsedByHeatPumpEnergy": 53.524902625139035,
+        "heatPumpEnergy": 97.24815303971928,
+        "storageLossEnergy": 112.24214520188877,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 183634.78355488283,
+        "temperatureSamples": 2976
+      },
+      "quantumGravity": {
+        "gridImportEnergy": 53.70233294419377,
+        "pvUsedByHeatPumpEnergy": 10.76198203090254,
+        "heatPumpEnergy": 64.4643149750965,
+        "storageLossEnergy": 13.162389369732283,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 178593.46137070993,
+        "temperatureSamples": 2976
+      },
+      "plasmaWave": {
+        "gridImportEnergy": 43.723250414580136,
+        "pvUsedByHeatPumpEnergy": 53.88849853598011,
+        "heatPumpEnergy": 97.61174895056051,
+        "storageLossEnergy": 112.24155188375006,
+        "unmetThermalDemand": 0,
+        "temperatureSum": 183634.44034226667,
+        "temperatureSamples": 2976
+      }
+    }
+  ]
+}

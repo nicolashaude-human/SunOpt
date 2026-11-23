@@ -52,6 +52,9 @@ interface RequestBody {
 
   feedInPriceChfPerKWh:
     number;
+
+  // Dedicated CUDA reference API: pass "A" to retain exact FP64 GPU solver.
+  causalPath?: "A" | "B";
 }
 
 
@@ -313,6 +316,9 @@ export async function POST(
           body.feedInPriceChfPerKWh,
 
         storageVolumes,
+
+        causalPath:
+          body.causalPath === "A" ? "A" : "B",
       });
 
 
@@ -334,6 +340,9 @@ export async function POST(
 
       fake:
         false,
+
+      causalPath:
+        lockstep.profile.causalPath,
 
       year:
         YEAR,
@@ -367,6 +376,7 @@ export async function POST(
 
       points:
         lockstep.points,
+      thermalReserve: lockstep.thermalReserve,
 
       gpuLockstep:
         lockstep.profile,

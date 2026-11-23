@@ -1,0 +1,69 @@
+/* SunOpt – shared design tokens, common to Next.js and static pages.
+   Chart colours are intentionally kept separate from UI-state colours. */
+:root {
+  color-scheme: light;
+  --sunopt-page: #ffe1a6;
+  --sunopt-bg: #fffaf2;
+  --sunopt-card: #ffffff;
+  --sunopt-panel: #ffedca;
+  --sunopt-panel-soft: #f8eedc;
+  --sunopt-panel-hover: #f3e6d2;
+  --sunopt-ink: #1f1f1f;
+  --sunopt-text: #1f1f1f;
+  --sunopt-muted: #675640;
+  --sunopt-soft-text: #76644d;
+  --sunopt-border: #d9c7aa;
+  --sunopt-border-soft: #d8c5a5;
+  --sunopt-accent: #ddb114;
+  --sunopt-accent-dark: #9a7410;
+  --sunopt-grid: #eadfcf;
+  --sunopt-night: #222222;
+  --sunopt-zero: #756b5d;
+  --sunopt-low: #c99a2b;
+  --sunopt-rain: #6e8798;
+  --sunopt-high: #ddb114;
+  --sunopt-green-background: #eff8ec;
+  --sunopt-green-background-end: #dcefd8;
+  --sunopt-green-active: #d9f2d4;
+  --sunopt-green-active-end: #bfe5b8;
+  --sunopt-green-border: #7ca878;
+  --sunopt-green-border-active: #1f6f2a;
+  --sunopt-green-ink: #17331a;
+  --sunopt-green-muted: #486348;
+  --sunopt-focus: #267431;
+  --sunopt-radius: 14px;
+  --sunopt-shadow: 0 4px 12px rgba(52,92,48,.08);
+}
+/* Reusable application surfaces – no simulation logic depends on these. */
+.sunopt-page { min-height: 100vh; background: var(--sunopt-page); color: var(--sunopt-ink); }
+.sunopt-doc-page { min-height: 100vh; background: var(--sunopt-page); color: var(--sunopt-ink); }
+.sunopt-panel { background: var(--sunopt-bg); border: 1px solid var(--sunopt-border-soft); border-radius: var(--sunopt-radius); }
+.sunopt-card { background: var(--sunopt-card); border: 1px solid var(--sunopt-border-soft); border-radius: var(--sunopt-radius); }
+.sunopt-kicker { color: var(--sunopt-accent-dark); font-size: .8rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+.sunopt-muted { color: var(--sunopt-muted); }
+.sunopt-focus-visible:focus-visible,
+.sunopt-drag-scroll:focus-visible { outline: 3px solid var(--sunopt-focus); outline-offset: 3px; }
+/* Navigation: scrollbar is visually hidden, scrolling by mouse drag, touch, wheel and keyboard still works. */
+.sunopt-drag-scroll { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -ms-overflow-style: none; cursor: grab; touch-action: pan-x; }
+.sunopt-drag-scroll::-webkit-scrollbar { display: none; }
+.sunopt-drag-scroll[data-dragging="true"] { cursor: grabbing; user-select: none; }
+.sunopt-nav-link { flex: 0 0 auto; border-radius: 9px; padding: .55rem .8rem; color: var(--sunopt-muted); font-size: .875rem; font-weight: 700; text-decoration: none; white-space: nowrap; }
+.sunopt-nav-link:hover { background: var(--sunopt-panel-hover); color: var(--sunopt-ink); }
+.sunopt-nav-link[aria-current="page"] { background: var(--sunopt-accent); color: #fff; }
+.sunopt-nav-link:focus-visible, .sunopt-nav-toggle:focus-visible { outline: 3px solid var(--sunopt-focus); outline-offset: 2px; }
+.sunopt-nav-toggle { display: inline-flex; align-items: center; gap: .3rem; border: 1px solid var(--sunopt-border); background: var(--sunopt-card); border-radius: 9px; padding: .53rem .8rem; font-size: .875rem; font-weight: 700; color: var(--sunopt-muted); cursor: pointer; }
+.sunopt-nav-toggle:hover, .sunopt-nav-toggle[aria-expanded="true"] { background: var(--sunopt-panel-hover); color: var(--sunopt-ink); }
+/* Historic presentation flow-node look, reused in explanatory Next.js documentation. */
+.sunopt-flow-step { display: grid; grid-template-columns: minmax(12rem, 30%) minmax(0, 1fr); gap: clamp(1rem, 2.5vw, 2rem); align-items: stretch; }
+.sunopt-flow-node { min-width: 0; border: 2px solid var(--sunopt-green-border); border-radius: var(--sunopt-radius); padding: 1rem; background: linear-gradient(180deg, var(--sunopt-green-background), var(--sunopt-green-background-end)); color: var(--sunopt-green-ink); box-shadow: var(--sunopt-shadow); }
+.sunopt-flow-node strong { display: block; font-size: 1rem; line-height: 1.35; }
+.sunopt-flow-node span { display: block; margin-top: .4rem; color: var(--sunopt-green-muted); font-size: .78rem; line-height: 1.45; }
+.sunopt-flow-prose { display: flex; align-items: center; line-height: 1.75; color: var(--sunopt-muted); }
+.sunopt-flow-arrow { width: 30%; padding: .35rem 0; color: var(--sunopt-focus); text-align: center; font-size: 1.3rem; line-height: 1.15; }
+.sunopt-flow-source { margin-top: .7rem; font-size: .76rem; overflow-wrap: anywhere; color: var(--sunopt-green-muted); }
+@media(max-width: 640px) {
+  .sunopt-flow-step { grid-template-columns: 1fr; gap: .6rem; }
+  .sunopt-flow-arrow { width: 100%; }
+  .sunopt-flow-prose { align-items: start; }
+}
+@media (prefers-reduced-motion: reduce) { .sunopt-flow-node, .sunopt-nav-toggle, .sunopt-nav-link { transition: none; } }

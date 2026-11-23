@@ -1,0 +1,87 @@
+{
+  "tool": "sunopt-static-navigation-v3-verify",
+  "at": "2026-11-20T12:36:09.793Z",
+  "passed": true,
+  "checks": [
+    {
+      "name": "/project-structure.html: three primary + selected fourth",
+      "pass": true
+    },
+    {
+      "name": "/project-structure.html: active button selected",
+      "pass": true
+    },
+    {
+      "name": "/project-structure.html: hover opens dropdown",
+      "pass": true
+    },
+    {
+      "name": "/project-structure.html: mouse leave closes dropdown",
+      "pass": true
+    },
+    {
+      "name": "/project-structure.html: icon opens for touch",
+      "pass": true
+    },
+    {
+      "name": "/project-structure.html: Escape closes",
+      "pass": true
+    },
+    {
+      "name": "/presentation/: three primary + selected fourth",
+      "pass": true
+    },
+    {
+      "name": "/presentation/: active button selected",
+      "pass": true
+    },
+    {
+      "name": "/presentation/: hover opens dropdown",
+      "pass": true
+    },
+    {
+      "name": "/presentation/: mouse leave closes dropdown",
+      "pass": true
+    },
+    {
+      "name": "/presentation/: icon opens for touch",
+      "pass": true
+    },
+    {
+      "name": "/presentation/: Escape closes",
+      "pass": true
+    },
+    {
+      "name": "project structure mounts shared static navigation",
+      "pass": true
+    },
+    {
+      "name": "site navigation opens the embedded presentation",
+      "pass": true
+    },
+    {
+      "name": "project structure old bespoke links removed",
+      "pass": true
+    },
+    {
+      "name": "standalone HTML retains the slide tabs",
+      "pass": true
+    },
+    {
+      "name": "floating hover menu never changes layout height",
+      "pass": true
+    },
+    {
+      "name": "shared site theme and scroll",
+      "pass": true
+    },
+    {
+      "name": "unsupported controller paragraph and stage removed",
+      "pass": true
+    },
+    {
+      "name": "unintelligible A/B description removed",
+      "pass": true
+    }
+  ]
+}

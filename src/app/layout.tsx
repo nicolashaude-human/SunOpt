@@ -34,6 +34,10 @@ export default function RootLayout(
   return (
     <html lang="de">
 
+      <head>
+        <link rel="stylesheet" href="/styles/sunopt-theme.css" />
+      </head>
+
       <body>
 
         <SiteNavigation />

@@ -244,6 +244,30 @@ def decode_core_curve(vf_status: bytes, mask: bytes):
     return points
 
 
+def resolve_production_point(vf_status, mask, target_uv, target_khz, offset_mhz):
+    points = [(slot, freq) for slot, volt, freq in decode_core_curve(vf_status, mask)
+              if volt == target_uv]
+    available = ", ".join(f"slot {slot}: {freq / 1000:.3f} MHz" for slot, freq in points)
+    if len(points) != 1:
+        raise RuntimeError(
+            f"expected one core V/F point at {target_uv / 1000:g} mV; "
+            f"found {available or 'none'}"
+        )
+    slot, frequency_khz = points[0]
+    if abs(frequency_khz - target_khz) > 15_000:
+        raise RuntimeError(
+            f"core V/F point at {target_uv / 1000:g} mV is {available}; "
+            f"outside ±15 MHz of {target_khz / 1000:g} MHz"
+        )
+    # Tolerate a single boost bin while preserving the previous voltage,
+    # upper frequency cap and maximum positive offset.
+    curve_cap_khz = target_khz + offset_mhz * 1000
+    applied_offset_mhz = min(offset_mhz, (curve_cap_khz - frequency_khz) // 1000)
+    if applied_offset_mhz <= 0:
+        raise RuntimeError("production V/F target has no positive offset within the allowed cap")
+    return slot, frequency_khz, applied_offset_mhz
+
+
 def make_curve_oc_candidate(
     original_control: bytes,
     vf_status: bytes,
@@ -362,6 +386,22 @@ def read_clock_entry6(data: bytes):
     return hits[0]
 
 
+def read_restored_control(read, matches, fast):
+    if not fast:
+        time.sleep(0.2)
+        status, value = read()
+        return status, value, status == 0 and value is not None and matches(value)
+
+    deadline = time.monotonic() + 0.2
+    while True:
+        status, value = read()
+        matched = status == 0 and value is not None and matches(value)
+        remaining = deadline - time.monotonic()
+        if matched or remaining <= 0:
+            return status, value, matched
+        time.sleep(min(0.02, remaining))
+
+
 def decode_fan_control(data: bytes):
     version = struct.unpack_from("<I", data, 0)[0]
     count = struct.unpack_from("<I", data, 8)[0]
@@ -377,6 +417,11 @@ def decode_fan_control(data: bytes):
             "offset": off,
         })
     return version, count, entries
+
+
+def fan_settings(data: bytes):
+    _, _, entries = decode_fan_control(data)
+    return {e["index"]: (e["mode"], e["level"] if e["mode"] == 1 else None) for e in entries}
 
 
 def make_fan_candidate(original: bytes, target: int):
@@ -451,6 +496,8 @@ def main() -> int:
     ap.add_argument("--gpu", type=int, default=0)
     ap.add_argument("--target-voltage-mv", type=int, default=1050)
     ap.add_argument("--native-vf-frequency-mhz", type=int, default=2865)
+    ap.add_argument("--allow-native-vf-bin-drift", action="store_true")
+    ap.add_argument("--fast-control-readback", action="store_true")
     ap.add_argument("--fan-percent", type=int, default=70)
     ap.add_argument("--fan-auto", action="store_true")
     ap.add_argument("--fan-tolerance", type=int, default=3)
@@ -533,13 +580,24 @@ def main() -> int:
         if status != 0 or vf is None:
             raise RuntimeError("cannot read V/F status")
 
-        slots = find_native_point(vf, mask, target_uv, target_khz)
-        log.line("nativeTargetSlots=" + ",".join(str(x) for x in slots))
-        if len(slots) != 1:
-            raise RuntimeError(
-                f"native {args.target_voltage_mv} mV / "
-                f"{args.native_vf_frequency_mhz} MHz point not unique"
+        native_frequency_khz = target_khz
+        curve_offset_mhz = args.curve_offset_mhz
+        if args.allow_native_vf_bin_drift:
+            target_slot, native_frequency_khz, curve_offset_mhz = resolve_production_point(
+                vf, mask, target_uv, target_khz, curve_offset_mhz,
             )
+        else:
+            slots = find_native_point(vf, mask, target_uv, target_khz)
+            if len(slots) != 1:
+                raise RuntimeError(
+                    f"native {args.target_voltage_mv} mV / "
+                    f"{args.native_vf_frequency_mhz} MHz point not unique"
+                )
+            target_slot = slots[0]
+
+        log.line(f"nativeTargetSlots={target_slot}")
+        log.line(f"nativeVfFrequency.actualMHz={native_frequency_khz / 1000:.3f}")
+        log.line(f"curveOffset.appliedMHz={curve_offset_mhz}")
 
         status, original_lock = nv.get_raw(
             handle,
@@ -573,20 +631,19 @@ def main() -> int:
         if status != 0 or original_curve_control is None:
             raise RuntimeError("cannot read original V/F curve control")
 
-        if args.curve_offset_mhz != 0:
-            target_slot = slots[0]
+        if curve_offset_mhz != 0:
             curve_candidate, changed, desired_khz = make_curve_oc_candidate(
                 original_curve_control,
                 vf,
                 mask,
                 target_slot,
-                args.curve_offset_mhz,
+                curve_offset_mhz,
                 args.cap_band_points,
             )
 
             log.line(
                 f"curveTarget.nativeFrequencyMHz="
-                f"{(desired_khz - args.curve_offset_mhz * 1000)/1000.0:.3f}"
+                f"{native_frequency_khz/1000.0:.3f}"
             )
             log.line(
                 f"curveTarget.desiredFrequencyMHz={desired_khz/1000.0:.3f}"
@@ -625,30 +682,30 @@ def main() -> int:
                 f"curveControl.targetAnchor={target_slot} "
                 f"deltaMHz={target_delta/1000.0:.3f}"
             )
-            if target_delta != args.curve_offset_mhz * 1000:
+            if target_delta != curve_offset_mhz * 1000:
                 raise RuntimeError("V/F curve-control target delta mismatch")
 
-            # Let the driver settle, then confirm the effective target region
-            # moved upward. Exact boost bins can differ by several MHz.
-            time.sleep(0.5)
-            status, vf_after = nv.get_raw(
-                handle,
-                ID_GPU_GET_VF_CURVE_STATUS,
-                VF_STATUS_SIZE,
-                1,
-                request_mask=mask,
-            )
-            log.line(f"vfStatus.afterCurve={nv.status_text(status)}")
-            if status == 0 and vf_after is not None:
-                core_after = {
-                    slot: (volt, freq)
-                    for slot, volt, freq in decode_core_curve(vf_after, mask)
-                }
-                if target_slot in core_after:
-                    effective = core_after[target_slot][1] / 1000.0
-                    log.line(
-                        f"curveTarget.effectiveFrequencyMHz={effective:.3f}"
-                    )
+            if not args.fast_control_readback:
+                # The benchmark logs an additional settled V/F status sample.
+                time.sleep(0.5)
+                status, vf_after = nv.get_raw(
+                    handle,
+                    ID_GPU_GET_VF_CURVE_STATUS,
+                    VF_STATUS_SIZE,
+                    1,
+                    request_mask=mask,
+                )
+                log.line(f"vfStatus.afterCurve={nv.status_text(status)}")
+                if status == 0 and vf_after is not None:
+                    core_after = {
+                        slot: (volt, freq)
+                        for slot, volt, freq in decode_core_curve(vf_after, mask)
+                    }
+                    if target_slot in core_after:
+                        effective = core_after[target_slot][1] / 1000.0
+                        log.line(
+                            f"curveTarget.effectiveFrequencyMHz={effective:.3f}"
+                        )
 
         if args.fan_auto:
             log.line("fanControl.set=SKIPPED_AUTOMATIC")
@@ -763,11 +820,11 @@ def main() -> int:
             "gpuName": name,
             "gpuIndex": args.gpu,
             "targetVoltageMv": args.target_voltage_mv,
-            "nativeVfFrequencyMHz": args.native_vf_frequency_mhz,
-            "nativeVfSlot": slots[0],
+            "nativeVfFrequencyMHz": native_frequency_khz / 1000,
+            "nativeVfSlot": target_slot,
             "fanPercent": None if args.fan_auto else args.fan_percent,
             "fanMode": "automatic" if args.fan_auto else "manual",
-            "curveOffsetMHz": args.curve_offset_mhz,
+            "curveOffsetMHz": curve_offset_mhz,
             "capBandPoints": args.cap_band_points,
             "reportedFanPercent": last_smi["fanPercent"] if last_smi else None,
             "idleClockMHz": last_smi["clockMHz"] if last_smi else None,
@@ -784,7 +841,7 @@ def main() -> int:
             if not parent_alive(args.parent_pid):
                 log.line("guardStopReason=PARENT_EXIT")
                 break
-            time.sleep(0.25)
+            time.sleep(0.02 if args.fast_control_readback else 0.25)
 
         exit_code = 0
 
@@ -804,12 +861,11 @@ def main() -> int:
                     log.line(f"clockLock.restore.set={nv.status_text(s)}")
                     restore_ok = restore_ok and (s == 0)
                     if s == 0:
-                        time.sleep(0.2)
-                        sr, rb = nv.get_raw(
-                            handle,
-                            ID_GPU_GET_CLOCK_BOOST_LOCK,
-                            CLOCK_LOCK_SIZE,
-                            CLOCK_LOCK_VERSION,
+                        sr, rb, matched = read_restored_control(
+                            lambda: nv.get_raw(handle, ID_GPU_GET_CLOCK_BOOST_LOCK,
+                                               CLOCK_LOCK_SIZE, CLOCK_LOCK_VERSION),
+                            lambda value: read_clock_entry6(value) == read_clock_entry6(original_lock),
+                            args.fast_control_readback,
                         )
                         log.line(f"clockLock.restore.read={nv.status_text(sr)}")
                         if sr == 0 and rb:
@@ -819,7 +875,7 @@ def main() -> int:
                                 f"mode={e6['mode']} "
                                 f"voltageMv={e6['voltageUV']/1000.0:.3f}"
                             )
-                        restore_ok = restore_ok and (sr == 0)
+                        restore_ok = restore_ok and (matched if args.fast_control_readback else sr == 0)
                 except Exception as exc:
                     restore_ok = False
                     log.line(f"clockLock.restore.error={type(exc).__name__}: {exc}")
@@ -837,27 +893,17 @@ def main() -> int:
                     restore_ok = restore_ok and (s == 0)
 
                     if s == 0:
-                        time.sleep(0.2)
-                        sr, rb = nv.get_raw(
-                            handle,
-                            ID_GPU_GET_VF_CURVE_CONTROL,
-                            VF_CONTROL_SIZE,
-                            1,
-                            request_mask=mask,
+                        sr, rb, matched = read_restored_control(
+                            lambda: nv.get_raw(handle, ID_GPU_GET_VF_CURVE_CONTROL,
+                                               VF_CONTROL_SIZE, 1, request_mask=mask),
+                            lambda value: value == original_curve_control,
+                            args.fast_control_readback,
                         )
                         log.line(
                             f"curveControl.restore.read={nv.status_text(sr)}"
                         )
-                        restore_ok = restore_ok and (sr == 0)
-                        if sr == 0 and rb is not None:
-                            restore_ok = (
-                                restore_ok
-                                and rb == original_curve_control
-                            )
-                            log.line(
-                                "curveControl.restore.exactMatch="
-                                + str(rb == original_curve_control)
-                            )
+                        restore_ok = restore_ok and matched
+                        log.line(f"curveControl.restore.exactMatch={matched}")
                 except Exception as exc:
                     restore_ok = False
                     log.line(
@@ -873,13 +919,11 @@ def main() -> int:
                     log.line(f"fanControl.restore.set={nv.status_text(s)}")
                     restore_ok = restore_ok and (s == 0)
                     if s == 0:
-                        time.sleep(0.2)
-                        sr, rb = nv.get_raw(
-                            handle,
-                            ID_GPU_GET_FAN_CONTROL,
-                            FAN_CONTROL_CLAIMED_SIZE,
-                            1,
-                            alloc_size=FAN_CONTROL_ALLOC_SIZE,
+                        sr, rb, matched = read_restored_control(
+                            lambda: nv.get_raw(handle, ID_GPU_GET_FAN_CONTROL, FAN_CONTROL_CLAIMED_SIZE,
+                                               1, alloc_size=FAN_CONTROL_ALLOC_SIZE),
+                            lambda value: fan_settings(value) == fan_settings(original_fan),
+                            args.fast_control_readback,
                         )
                         log.line(f"fanControl.restore.read={nv.status_text(sr)}")
                         if sr == 0 and rb:
@@ -890,7 +934,7 @@ def main() -> int:
                                     f"index={e['index']} level={e['level']} "
                                     f"mode={e['mode']}"
                                 )
-                        restore_ok = restore_ok and (sr == 0)
+                        restore_ok = restore_ok and (matched if args.fast_control_readback else sr == 0)
                 except Exception as exc:
                     restore_ok = False
                     log.line(f"fanControl.restore.error={type(exc).__name__}: {exc}")

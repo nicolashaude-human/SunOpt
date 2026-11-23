@@ -1,8 +1,8 @@
 {
   "hash_kind": "manifest-sha256",
-  "installed_utc": "2026-11-16T09:28:13.459546+00:00",
-  "package": "20261116-diagnostic-scanner-and-docs-watcher.zip",
+  "installed_utc": "2026-11-20T11:39:03.110702+00:00",
+  "package": "20261120-sunopt-standalone-html5-jahresdiagramme-watcher.zip",
   "package_format": 2,
-  "parent_sha256": "72a0f36555d9d0b81c4c55e56632d4de55703deae31f9638bbac7520f34a0a78",
-  "sha256": "07be43b6fd1203f90e22f8f049c437059655a783fce5e89c2e43e7dbaa83f8a4"
+  "parent_sha256": "761052a3f3778a7f06549533b4998f32b652a27d13d1bd856be49192a64b2df6",
+  "sha256": "63de7808ab9af4e3b1b501022057d05ec5e9809a19b0535bc8be77dde8d08f29"
 }

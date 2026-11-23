@@ -20,11 +20,21 @@ import type {
   TankComparisonPoint,
 } from "@/types/tank-comparison";
 
+import {
+  getSunOptNativeBinding,
+  getAllNativeScopeStatus,
+} from "@/simulation/rust-acceleration-runtime";
+
+import type {
+  ApproachANativeScopes,
+} from "./tank-comparison-process-pool";
+
+
 import type {
   TankComparisonWorkerInit,
   TankComparisonWorkerRequest,
   TankComparisonWorkerResponse,
-} from "@/simulation/tank-comparison-process-pool";
+} from "./tank-comparison-process-pool";
 
 
 let init:
@@ -366,6 +376,23 @@ process.on(
         "init"
       ) {
 
+        const nativeBinding = getSunOptNativeBinding();
+        const required = [
+          "registerAccelerationScope",
+          "registerAccelerationDataPair",
+          "runNoSunshineKernelContext",
+          "runPeakShavingCausalKernelContext",
+        ] as const;
+
+        const missing = required.filter(
+          (name) => typeof nativeBinding?.[name] !== "function",
+        );
+        if (missing.length > 0) {
+          throw new Error(
+            `Approach A requires the consolidated A1+A2 native addon; missing exports: ${missing.join(", ")}`,
+          );
+        }
+
         init =
           message.payload;
 
@@ -390,11 +417,35 @@ process.on(
           );
 
 
+        const nativeScopes: ApproachANativeScopes =
+          getAllNativeScopeStatus().map((status) => ({
+            scopeId: status.scopeId,
+            calls: status.calls,
+            nativeCalls: status.nativeCalls,
+            fallbackCalls: status.fallbackCalls,
+            failures: status.failures,
+          }));
+
+        // Do not claim A1+A2 success if the native scopes silently fell back.
+        for (const scopeId of [
+          "rust_noSunshine",
+          "rust_peakShavingCausal",
+        ]) {
+          const status = nativeScopes.find((s) => s.scopeId === scopeId);
+          if (!status || status.nativeCalls === 0 ||
+              status.fallbackCalls !== 0 || status.failures !== 0) {
+            throw new Error(
+              `Approach A native execution incomplete for ${scopeId}: ${JSON.stringify(status ?? null)}`,
+            );
+          }
+        }
+
         send({
           type:
             "result",
 
           point,
+          nativeScopes,
         });
       }
 

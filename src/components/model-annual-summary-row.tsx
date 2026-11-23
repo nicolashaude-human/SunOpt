@@ -28,9 +28,9 @@ export function ModelAnnualSummaryRow({
   model,
 }: ModelAnnualSummaryRowProps) {
   return (
-    <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+    <section className="rounded-2xl border border-[var(--sunopt-border-soft)] bg-[var(--sunopt-card)] p-4 shadow-sm">
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="text-lg font-bold text-gray-950">
+        <h3 className="text-lg font-bold text-[var(--sunopt-ink)]">
           {model.name}
         </h3>
 

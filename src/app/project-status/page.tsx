@@ -772,7 +772,7 @@ function StatusCheckbox(
       className={
         props.done
           ? "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-green-600 bg-green-600 text-sm font-bold text-white"
-          : "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border-2 border-gray-300 bg-white"
+          : "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border-2 border-gray-300 bg-[var(--sunopt-card)]"
       }
       aria-label={
         props.done
@@ -809,24 +809,24 @@ function StatusSectionCard(
 
 
   return (
-    <section className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+    <section className="rounded-xl border border-[var(--sunopt-border-soft)] bg-[var(--sunopt-card)] p-6 shadow-sm">
 
       <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
 
         <div>
 
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-[var(--sunopt-ink)]">
             {props.section.title}
           </h2>
 
-          <p className="mt-1 max-w-3xl text-sm text-gray-600">
+          <p className="mt-1 max-w-3xl text-sm text-[var(--sunopt-muted)]">
             {props.section.description}
           </p>
 
         </div>
 
 
-        <div className="rounded-full bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700">
+        <div className="rounded-full bg-gray-100 px-4 py-2 text-sm font-medium text-[var(--sunopt-muted)]">
           {completed}
           {" / "}
           {props.section.items.length}
@@ -846,7 +846,7 @@ function StatusSectionCard(
               className={
                 item.done
                   ? "flex gap-4 rounded-lg border border-green-100 bg-green-50 p-4"
-                  : "flex gap-4 rounded-lg border border-gray-200 bg-gray-50 p-4"
+                  : "flex gap-4 rounded-lg border border-[var(--sunopt-border-soft)] bg-[var(--sunopt-page)] p-4"
               }
             >
 
@@ -863,11 +863,11 @@ function StatusSectionCard(
 
               <div>
 
-                <h3 className="font-semibold text-gray-900">
+                <h3 className="font-semibold text-[var(--sunopt-ink)]">
                   {item.title}
                 </h3>
 
-                <p className="mt-1 text-sm leading-6 text-gray-600">
+                <p className="mt-1 text-sm leading-6 text-[var(--sunopt-muted)]">
                   {item.description}
                 </p>
 
@@ -1107,13 +1107,13 @@ export default function ProjectStatusPage() {
 
 
   return (
-    <main className="min-h-screen bg-gray-50 px-6 py-10">
+    <main className="min-h-screen bg-[var(--sunopt-page)] px-6 py-10">
 
       <div className="mx-auto max-w-6xl">
 
         <header className="mb-10">
 
-          <div className="mb-2 text-sm font-semibold uppercase tracking-wider text-gray-500">
+          <div className="mb-2 text-sm font-semibold uppercase tracking-wider text-[var(--sunopt-soft-text)]">
             SunOpt
           </div>
 
@@ -1122,11 +1122,11 @@ export default function ProjectStatusPage() {
 
             <div>
 
-              <h1 className="text-4xl font-bold tracking-tight text-gray-950">
+              <h1 className="text-4xl font-bold tracking-tight text-[var(--sunopt-ink)]">
                 PV-Warmwasserspeicher Optimierung
               </h1>
 
-              <p className="mt-4 max-w-4xl text-lg leading-8 text-gray-600">
+              <p className="mt-4 max-w-4xl text-lg leading-8 text-[var(--sunopt-muted)]">
                 Entwicklungsstand der Simulation und
                 Regelstrategie für die optimale Nutzung
                 von Photovoltaikenergie zur
@@ -1139,7 +1139,7 @@ export default function ProjectStatusPage() {
             <button
               type="button"
               onClick={downloadMarkdown}
-              className="rounded-lg bg-gray-900 px-5 py-3 text-sm font-semibold text-white shadow-sm hover:bg-gray-700"
+              className="rounded-lg bg-[var(--sunopt-ink)] px-5 py-3 text-sm font-semibold text-white shadow-sm hover:bg-gray-700"
             >
               Markdown herunterladen
             </button>
@@ -1147,24 +1147,24 @@ export default function ProjectStatusPage() {
           </div>
 
 
-          <div className="mt-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+          <div className="mt-8 rounded-xl border border-[var(--sunopt-border-soft)] bg-[var(--sunopt-card)] p-6 shadow-sm">
 
             <div className="flex flex-wrap items-end justify-between gap-4">
 
               <div>
 
-                <div className="text-sm text-gray-500">
+                <div className="text-sm text-[var(--sunopt-soft-text)]">
                   Projektfortschritt
                 </div>
 
-                <div className="mt-1 text-3xl font-bold text-gray-950">
+                <div className="mt-1 text-3xl font-bold text-[var(--sunopt-ink)]">
                   {progress} %
                 </div>
 
               </div>
 
 
-              <div className="text-sm text-gray-600">
+              <div className="text-sm text-[var(--sunopt-muted)]">
                 {completed}
                 {" von "}
                 {total}
@@ -1192,34 +1192,34 @@ export default function ProjectStatusPage() {
 
         <section className="mb-10 grid gap-5 md:grid-cols-3">
 
-          <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div className="rounded-xl border border-[var(--sunopt-border-soft)] bg-[var(--sunopt-card)] p-5 shadow-sm">
 
-            <div className="text-sm text-gray-500">
+            <div className="text-sm text-[var(--sunopt-soft-text)]">
               Referenz
             </div>
 
-            <div className="mt-2 text-2xl font-bold text-gray-950">
+            <div className="mt-2 text-2xl font-bold text-[var(--sunopt-ink)]">
               Existing Controller
             </div>
 
-            <div className="mt-1 text-sm text-gray-600">
+            <div className="mt-1 text-sm text-[var(--sunopt-muted)]">
               Quantitative Baseline
             </div>
 
           </div>
 
 
-          <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div className="rounded-xl border border-[var(--sunopt-border-soft)] bg-[var(--sunopt-card)] p-5 shadow-sm">
 
-            <div className="text-sm text-gray-500">
+            <div className="text-sm text-[var(--sunopt-soft-text)]">
               kWh_user
             </div>
 
-            <div className="mt-2 text-2xl font-bold text-gray-950">
+            <div className="mt-2 text-2xl font-bold text-[var(--sunopt-ink)]">
               48-h Forecast
             </div>
 
-            <div className="mt-1 text-sm text-gray-600">
+            <div className="mt-1 text-sm text-[var(--sunopt-muted)]">
               Kurzfristige Waterline{" "}
               <span className="text-gray-400">
                 (Plasma Wave Accelerator)
@@ -1229,17 +1229,17 @@ export default function ProjectStatusPage() {
           </div>
 
 
-          <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div className="rounded-xl border border-[var(--sunopt-border-soft)] bg-[var(--sunopt-card)] p-5 shadow-sm">
 
-            <div className="text-sm text-gray-500">
+            <div className="text-sm text-[var(--sunopt-soft-text)]">
               kWh_noSunshine
             </div>
 
-            <div className="mt-2 text-2xl font-bold text-gray-950">
+            <div className="mt-2 text-2xl font-bold text-[var(--sunopt-ink)]">
               7-Tage-Forecast
             </div>
 
-            <div className="mt-1 text-sm text-gray-600">
+            <div className="mt-1 text-sm text-[var(--sunopt-muted)]">
               Langfristige Waterline{" "}
               <span className="text-gray-400">
                 (Plasma Wave Accelerator)
@@ -1272,7 +1272,7 @@ export default function ProjectStatusPage() {
         </div>
 
 
-        <section className="mt-10 rounded-xl border border-gray-200 bg-gray-900 p-7 text-white">
+        <section className="mt-10 rounded-xl border border-[var(--sunopt-border-soft)] bg-[var(--sunopt-ink)] p-7 text-white">
 
           <h2 className="text-2xl font-semibold">
             Aktuelles Entwicklungsziel

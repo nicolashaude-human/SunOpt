@@ -8,6 +8,7 @@ import {
   CartesianGrid,
   LabelList,
   Legend,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -48,6 +49,7 @@ interface BarChartProps {
 
   height?:
     number;
+  referenceValue?: number;
 }
 
 
@@ -59,24 +61,25 @@ export function BarChart({
   series,
   unit = "",
   height = 340,
+  referenceValue,
 }: BarChartProps) {
 
   return (
     <section
-      className="rounded-2xl border border-[#dfcfb7] bg-[#fffaf2] p-5 shadow-sm"
+      className="rounded-2xl border border-[var(--sunopt-border)] bg-[var(--sunopt-bg)] p-5 shadow-sm"
     >
       <div
         className="mb-5"
       >
         <h2
-          className="text-lg font-bold text-gray-950"
+          className="text-lg font-bold text-[var(--sunopt-ink)]"
         >
           {title}
         </h2>
 
         {description && (
           <p
-            className="mt-1 text-sm leading-6 text-[#79674f]"
+            className="mt-1 text-sm leading-6 text-[var(--sunopt-muted)]"
           >
             {description}
           </p>
@@ -131,6 +134,16 @@ export function BarChart({
             />
 
             <Legend />
+
+            {referenceValue !== undefined && (
+              <ReferenceLine
+                y={referenceValue}
+                stroke="#00538a"
+                strokeWidth={2}
+                strokeDasharray="6 4"
+                ifOverflow="extendDomain"
+              />
+            )}
 
             {series.map(
               (

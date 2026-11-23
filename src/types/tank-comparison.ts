@@ -39,6 +39,19 @@ export interface TankComparisonPoint {
 }
 
 
+export interface TankComparisonThermalReserve {
+  horizonHours: number;
+  maxHotWaterDemandKWh: number;
+  usableCapacityKWhPerLitre: number;
+  minimumTemperatureC: number;
+  maximumTemperatureC: number;
+  spaceHeating?: {
+    peakWeekShare: number;
+    indoorTemperatureC: number;
+    heatingLimitTemperatureC: number;
+  };
+}
+
 export interface TankComparisonResponse {
   fake: boolean;
 
@@ -79,4 +92,5 @@ export interface TankComparisonResponse {
   maximumSimulationDurationMs: number;
 
   points: TankComparisonPoint[];
+  thermalReserve?: TankComparisonThermalReserve;
 }

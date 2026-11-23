@@ -1,20 +1,5 @@
 /* public/presentation/slides.css */
 
-:root {
-  --sunopt-bg: #fffaf2;
-  --sunopt-card: #ffffff;
-  --sunopt-border: #d9c7aa;
-  --sunopt-muted: #66543d;
-  --sunopt-text: #1f1f1f;
-  --sunopt-accent: #ddb114;
-  --sunopt-grid: #eadfcf;
-  --sunopt-night: #222222;
-  --sunopt-zero: #756b5d;
-  --sunopt-low: #c99a2b;
-  --sunopt-rain: #6e8798;
-  --sunopt-high: #ddb114;
-}
-
 * {
   box-sizing: border-box;
 }
@@ -617,10 +602,10 @@ button {
 .flow-node {
   min-width: 0;
   min-height: 92px;
-  border: 2px solid #7ca878;
+  border: 2px solid var(--sunopt-green-border);
   border-radius: 14px;
-  background: linear-gradient(180deg, #eff8ec 0%, #dcefd8 100%);
-  color: #17331a;
+  background: linear-gradient(180deg, var(--sunopt-green-background) 0%, var(--sunopt-green-background-end) 100%);
+  color: var(--sunopt-green-ink);
   padding: 14px;
   text-align: left;
   cursor: pointer;
@@ -641,19 +626,19 @@ button {
 
 .flow-node span {
   display: block;
-  color: #486348;
+  color: var(--sunopt-green-muted);
   font-size: 12px;
   line-height: 1.35;
 }
 
 .flow-node.is-connected {
-  border-color: #4f8a4a;
-  background: #e5f4e1;
+  border-color: var(--sunopt-green-border-active);
+  background: var(--sunopt-green-background);
 }
 
 .flow-node.is-active {
-  border-color: #1f6f2a;
-  background: linear-gradient(180deg, #d9f2d4 0%, #bfe5b8 100%);
+  border-color: var(--sunopt-green-border-active);
+  background: linear-gradient(180deg, var(--sunopt-green-active) 0%, var(--sunopt-green-active-end) 100%);
   box-shadow: 0 0 0 4px rgba(46, 125, 50, 0.12), 0 10px 28px rgba(34, 92, 36, 0.18);
   transform: translateY(-2px);
 }
@@ -679,7 +664,7 @@ button {
 }
 
 .flow-arrow.is-active {
-  color: #267431;
+  color: var(--sunopt-focus);
   transform: scale(1.08);
 }
 
@@ -883,3 +868,15 @@ button {
     transform: rotate(90deg);
   }
 }
+
+/* Keep the slide navigation at its established height; slide tabs scroll by drag. */
+.slide-tabs { scrollbar-width: none; -ms-overflow-style: none; cursor: grab; touch-action: pan-x; }
+.slide-tabs::-webkit-scrollbar { display: none; }
+.slide-tabs[data-dragging="true"] { cursor: grabbing; user-select: none; }
+.slide-navigation { position: relative; z-index: 2; }
+
+/* Global SunOpt navigation (first row) + slide tabs (second row).
+   The floating hover palette overlaps row two and does not push it down. */
+body { display: flex; flex-direction: column; }
+.presentation-app { flex: 1 1 auto; height: auto; min-height: 0; }
+#sunopt-static-navigation { width: 100%; }

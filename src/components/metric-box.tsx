@@ -34,8 +34,8 @@ export function MetricBox({
     <div
       className="
         min-w-0 rounded-xl
-        border border-[#d8c5a5]
-        bg-[#f8eedc]
+        border border-[var(--sunopt-border-soft)]
+        bg-[var(--sunopt-panel-soft)]
         px-4 py-3
       "
     >
@@ -43,7 +43,7 @@ export function MetricBox({
         className="
           text-xs font-semibold
           uppercase tracking-wide
-          text-[#76644d]
+          text-[var(--sunopt-soft-text)]
         "
       >
         {label}
@@ -53,7 +53,7 @@ export function MetricBox({
         className={`
           mt-1 font-bold
           tabular-nums
-          text-gray-950
+          text-[var(--sunopt-ink)]
           ${valueClassName}
         `}
       >
@@ -65,7 +65,7 @@ export function MetricBox({
           className="
             mt-1 text-xs
             leading-5
-            text-[#76644d]
+            text-[var(--sunopt-soft-text)]
           "
         >
           {detail}

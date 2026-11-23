@@ -29,6 +29,11 @@ import {
   runTankComparisonGpuLockstep,
 } from "@/simulation/tank-comparison-gpu-lockstep";
 
+import {
+  startSunoptGpuProfileGuard,
+  type SunoptGpuProfileReport,
+} from "@/simulation/sunopt-gpu-profile-guard";
+
 import type {
   TankComparisonCausalPath,
   TankComparisonRequest,
@@ -291,12 +296,49 @@ export async function POST(
       );
 
 
-    const sweepStart =
-      performance.now();
+    // Fail closed: the proven B14P/Q NVAPI guard must set the 1050 mV
+    // V/F point, +625 MHz curve offset and manual 70% fan COMMAND before
+    // productive A/B. NVML here only reads telemetry. The legacy guard
+    // restores the original clock lock, curve and fan control on STOP.
+    // Observed fan speed is allowed to ramp: it is not the PWM setpoint.
+    const gpuGuardPreparationStart = performance.now();
+    const gpuGuard = await startSunoptGpuProfileGuard(causalPath, request.signal);
+    const gpuQueueDurationMs = gpuGuard.queueDurationMs;
+    const gpuGuardPreparationDurationMs = performance.now() - gpuGuardPreparationStart - gpuQueueDurationMs;
+    const sweepStart = performance.now();
+    let sweepEnd = sweepStart;
 
+    /*
+     * Approach A production winner (2026-11-13): DIRECT FP64.
+     * The single-step CUDA Graph candidate (AG) was parity-exact,
+     * but did not improve the end-to-end median.  The native worker
+     * checks SUNOPT_APPROACH_A_STEP_GRAPH on every causal call,
+     * so force it OFF for this synchronous production A sweep.
+     * Restore the original value even if the sweep throws.
+     * Approach B is intentionally untouched.
+     */
+    const graphEnvironmentKey =
+      "SUNOPT_APPROACH_A_STEP_GRAPH";
 
-    const lockstep =
-      runTankComparisonGpuLockstep(
+    const previousGraphSetting =
+      process.env[graphEnvironmentKey];
+
+    if (causalPath === "A") {
+      process.env[graphEnvironmentKey] = "0";
+      console.info(
+        "[SunOpt] Approach A selected: direct FP64 CUDA (final benchmark winner).",
+      );
+    }
+
+    let lockstep:
+      ReturnType<typeof runTankComparisonGpuLockstep>;
+
+    let gpuClockProfile: SunoptGpuProfileReport;
+    let gpuGuardRestoreDurationMs = 0;
+    try {
+      try {
+        lockstep =
+        runTankComparisonGpuLockstep(
         {
           weatherData:
             quarterHour.weatherData,
@@ -324,10 +366,32 @@ export async function POST(
           causalPath,
         },
       );
+        sweepEnd = performance.now();
+      } finally {
+        if (causalPath === "A") {
+          if (previousGraphSetting === undefined) {
+            delete process.env[graphEnvironmentKey];
+          } else {
+            process.env[graphEnvironmentKey] = previousGraphSetting;
+          }
+        }
+      }
+    } finally {
+      // Await telemetry and restoration; rejected clock/fan readings
+      // invalidate the production measurement rather than mislabel it.
+      const restoreStart = performance.now();
+      gpuClockProfile = await gpuGuard.stop();
+      gpuGuardRestoreDurationMs = performance.now() - restoreStart;
+    }
 
+    if (lockstep.profile.causalPath !== causalPath) {
+      throw new Error(
+        `GPU solver path mismatch: requested ${causalPath}, reported ${lockstep.profile.causalPath}.`,
+      );
+    }
 
     const sweepDurationMs =
-      performance.now() -
+      sweepEnd -
       sweepStart;
 
 
@@ -340,6 +404,10 @@ export async function POST(
       TankComparisonResponse & {
         gpuLockstep:
           typeof lockstep.profile;
+        gpuClockProfile: SunoptGpuProfileReport;
+        gpuGuardPreparationDurationMs: number;
+        gpuGuardRestoreDurationMs: number;
+        gpuQueueDurationMs: number;
       } = {
 
       fake:
@@ -368,6 +436,12 @@ export async function POST(
 
       sweepDurationMs,
 
+      // Die Laufzeit des eigentlichen CUDA-Sweeps wird NICHT mit dem
+      // Hochfahren von GPU-Takt und Lueftern vermischt.
+      gpuGuardPreparationDurationMs,
+      gpuGuardRestoreDurationMs,
+      gpuQueueDurationMs,
+
       totalDurationMs,
 
       averageSimulationDurationMs:
@@ -381,9 +455,11 @@ export async function POST(
 
       points:
         lockstep.points,
+      thermalReserve: lockstep.thermalReserve,
 
       gpuLockstep:
         lockstep.profile,
+      gpuClockProfile,
     };
 
 

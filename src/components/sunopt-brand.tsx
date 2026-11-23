@@ -69,7 +69,7 @@ const DEFAULT_LOGO_SIZE =
   
         {/* Typography Container */}
         <span
-          className="relative inline-block font-bold tracking-tight text-gray-950"
+          className="relative inline-block font-bold tracking-tight text-[var(--sunopt-ink)]"
           style={{
             fontSize: textSize,
             lineHeight: 1,

@@ -1,143 +1,128 @@
-// src/app/documentation/code-path/page.tsx
+import {
+  SunOptDocHeader,
+  SunOptFlowStep,
+} from "@/components/ui/sunopt-documentation";
 
-const stages = [
+// The explanations intentionally describe responsibilities rather than asserting
+// that every simulation call goes through the CPU JIT. The production CUDA path
+// below is separate and the A/B routing remains unchanged.
+const jitStages = [
   {
-    title: "1 · Browser / Tankvergleich",
-    file: "src/app/tank-comparison/page.tsx",
-    text:
-      "Die UI sammelt Wärmepumpenleistung, PV-Leistung, Tarife und den Solver-Pfad A oder B. Der Request geht an /api/tank-comparison.",
+    title: "Historische Vektoren",
+    subtitle: "Next.js · Daten über die Zeit",
+    file: "Wetter-, PV- und Verbrauchszeitreihen",
+    description: "Bevor SunOpt rechnen kann, braucht es eine zeitlich geordnete Liste von Werten. Für jedes Zeitintervall steht darin zum Beispiel, wie viel Solarstrom verfügbar war und wie viel Energie verbraucht wurde. Diese Listen nennt man Vektoren. So kann die Simulation einen ganzen Tag oder ein ganzes Jahr Schritt für Schritt nachvollziehen.",
   },
   {
-    title: "2 · API-Orchestrierung",
-    file: "src/app/api/tank-comparison/route.ts",
-    text:
-      "Die Route lädt die Wetterreihe, erzeugt den Warmwasserbedarf, resampelt auf 15 Minuten und startet genau einen GPU-Lockstep-Jahreslauf über alle 28 Speichergrössen.",
+    title: "Funktions-Wrapper",
+    subtitle: "Die passende Berechnung auswählen",
+    file: "src/simulation/rust-acceleration-scopes.ts",
+    description: "Nicht das gesamte Programm muss beschleunigt werden. Ein Wrapper bildet eine klar definierte Schnittstelle zu einer bestimmten Berechnung: Er nimmt die benötigten Werte entgegen und gibt das Ergebnis in einer einheitlichen Form zurück. Der übrige Anwendungscode kann dieselbe Aufgabe weiterhin verstehen, ohne die technischen Details der Ausführung zu kennen.",
   },
   {
-    title: "3 · Jahres-Lockstep",
-    file: "src/simulation/tank-comparison-gpu-lockstep.ts",
-    text:
-      "Alle Speicher teilen sich Wetter- und Lastreihen. Pro 15-Minuten-Schritt werden die dynamischen Zustände vorbereitet, der kausale Solver ausgeführt und danach der physische Speicherzustand fortgeschrieben.",
+    title: "Worker Manager",
+    subtitle: "Rechenaufträge organisieren",
+    file: "src/workers/",
+    description: "Der Worker Manager verteilt geeignete Aufgaben an Rechenprozesse und sammelt ihre Ergebnisse. Damit kann die Benutzeroberfläche von aufwendigen Berechnungen getrennt bleiben. Ob Aufgaben tatsächlich gleichzeitig laufen können, hängt davon ab, ob ihre Eingaben voneinander unabhängig sind.",
   },
   {
-    title: "4A · Approach A",
-    file: "konsolidierter A1–A7-Pfad",
-    text:
-      "A ist der exakte FP64-Referenz- und Produktionspfad. Hinter dem Button A gehört der konsolidierte Stand der validierten Approach-A-Optimierungen, nicht der alte nackte Direct-FP64-Pfad.",
+    title: "Native Schnittstelle",
+    subtitle: "JavaScript spricht mit Rust",
+    file: "rust/sunopt-node/ · N-API",
+    description: "Ein Webprogramm verwendet normalerweise JavaScript. Für rechenintensive Teile kann es eine native Bibliothek aufrufen. Die N-API-Schnittstelle übermittelt die nötigen Argumente an die Rust-Laufzeit und stellt das Ergebnis der Anwendung wieder zur Verfügung. Der Aufruf dieser Schnittstelle ist nicht selbst schon eine Beschleunigung.",
   },
   {
-    title: "4B · Approach B",
-    file: "B14P FP32 + FP64-Fallback",
-    text:
-      "B nutzt den problem-spezifisch komprimierten B14P-FP32-Pfad. Nicht unterstützte oder fehlerhafte B-Fälle fallen kontrolliert auf FP64 zurück.",
+    title: "Oxc-Parser und AST",
+    subtitle: "Quelltext als Syntaxbaum verstehen",
+    file: "Oxc · Abstract Syntax Tree",
+    description: "Der Parser liest eine unterstützte Funktion und zerlegt ihre Anweisungen in eine strukturierte Baumdarstellung. Dort steht beispielsweise, welche Werte addiert werden oder unter welcher Bedingung eine Schleife endet. Dieser Syntaxbaum ist noch kein ausführbarer Maschinencode: Er ist die Grundlage für den nächsten Übersetzungsschritt.",
   },
   {
-    title: "5 · N-API / Rust",
-    file: "rust/sunopt-node/src/cuda_context.rs",
-    text:
-      "Rust hält die persistenten nativen Kontexte, statischen Tankparameter und dynamischen Schrittwerte. Hier muss der tatsächlich aktive Pfad eindeutig diagnostizierbar sein.",
+    title: "Cranelift – JIT",
+    subtitle: "Während der Laufzeit übersetzen",
+    file: "Rust-Laufzeit · Cranelift IR",
+    description: "Aus dem Syntaxbaum wird zunächst eine Zwischenrepräsentation erzeugt, die Cranelift verarbeiten kann. Cranelift übersetzt sie zur Laufzeit in Maschinenanweisungen für den Prozessor. JIT bedeutet „Just in Time“: Die Übersetzung findet erst statt, wenn das Programm die Funktion benötigt. Kompilierte Varianten können danach wiederverwendet werden.",
   },
   {
-    title: "6 · CUDA",
-    file: "rust/sunopt-node/cuda/cuda_context.cu",
-    text:
-      "CUDA verarbeitet die unabhängigen Tank-Jobs eines Zeitschritts parallel. Der nächste Jahreszeitschritt kann erst nach dem Host-Feedback des aktuellen Schritts vorbereitet werden.",
+    title: "Ausführung und Ergebnis",
+    subtitle: "Maschinencode auf der CPU ausführen",
+    file: "JIT-Cache · Rückgabe an Next.js",
+    description: "Die Maschine führt die übersetzte Berechnung mit den aktuellen Eingabedaten aus. Das Resultat gelangt über die native Schnittstelle zurück zur Anwendung und kann dort für weitere Simulationsschritte oder Diagramme verwendet werden. Eine bereits kompilierte Funktion muss bei gleichen Voraussetzungen nicht jedes Mal neu übersetzt werden.",
   },
 ] as const;
 
-const feedback = [
-  "Speicherenergie zu Beginn des Schritts",
-  "Forecast / Mindestreserve / angeforderte HP-Energie",
-  "GPU bestimmt den kausalen Cut / Waterline",
-  "Wärmepumpe und Speicher werden physisch fortgeschrieben",
-  "neue Speicherenergie wird Zustand des nächsten 15-Minuten-Schritts",
+const cudaStages = [
+  {
+    title: "Parameter und Jahresdaten",
+    subtitle: "Next.js · Ausgangslage festlegen",
+    file: "src/app/tank-comparison/page.tsx",
+    description: "Man wählt die PV-Anlage, die Wärmepumpe und die Kostenannahmen. Die Anwendung verwendet dazu historische Wetter- und Verbrauchsreihen. Für jeden der 35'040 Viertelstundenschritte stehen so die benötigten zeitlichen Eingaben bereit.",
+  },
+  {
+    title: "API und Datenaufbereitung",
+    subtitle: "Eingaben prüfen und vorbereiten",
+    file: "src/app/api/tank-comparison/route.ts",
+    description: "Eine serverseitige Schnittstelle übernimmt die Anfrage. Sie bereitet den Jahreslauf für die unterschiedlichen Speichergrössen vor, bevor die zeitaufwendige Simulation startet. Diese Vorbereitungsphase ist vom eigentlichen GPU-Rechenkern getrennt.",
+  },
+  {
+    title: "GPU-Speicher und Datentransport",
+    subtitle: "Konstante Vektoren bleiben auf der Grafikkarte",
+    file: "rust/sunopt-node/ · CUDA-Runtime",
+    description: "Wiederverwendete Jahresdaten und vorbereitete Arbeitsbereiche werden möglichst auf der GPU gehalten. Pro Zeitschritt müssen nur die veränderlichen Zustandswerte ausgetauscht werden. Das spart Übertragungen zwischen Hauptspeicher und Grafikkarte.",
+  },
+  {
+    title: "Berechnung auf der Grafikkarte",
+    subtitle: "Variante A oder B",
+    file: "rust/sunopt-node/ · native CUDA-Funktionen",
+    description: "Im Tankvergleich stehen zwei Berechnungsvarianten zur Auswahl. A rechnet mit höherer numerischer Genauigkeit. B verwendet eine schnellere, speziell für diese Simulation entwickelte Berechnung. Mit dem Vergleich kann man sehen, ob sich dadurch die Ergebnisse verändern.",
+  },
+  {
+    title: "Neuer Speicherzustand",
+    subtitle: "Energiefluss je Zeitschritt bilanzieren",
+    file: "GPU-Lockstep · Zustandsaktualisierung",
+    description: "Die simulierte Wärmepumpe lädt den Speicher, Warmwasserverbrauch und Wärmeverluste entnehmen Energie. Daraus entsteht die Temperatur beziehungsweise der Energiezustand für den nächsten Schritt. Der neue Speicherzustand ist der Ausgangspunkt für das nächste Zeitintervall.",
+  },
+  {
+    title: "Jahresbilanz und Diagramme",
+    subtitle: "28 Tankgrössen miteinander vergleichen",
+    file: "Next.js · Tankvergleich",
+    description: "Am Ende werden Netzbezug, Eigenverbrauch, Einspeisung, Speicherverluste und Energiekosten über das gesamte Jahr ausgewertet. Die Ergebnisse gehen über die API zurück an die Oberfläche, wo die Speichergrössen verglichen werden.",
+  },
 ] as const;
 
 export default function CodePathDocumentationPage() {
-
   return (
-    <main className="mx-auto max-w-7xl px-4 py-10">
-      <header className="mb-8">
-        <p className="text-sm font-bold uppercase tracking-[0.18em] text-[#9a7410]">
-          SunOpt · Dokumentation
-        </p>
-        <h1 className="mt-2 text-4xl font-black text-gray-950">
-          Codepfad der Jahressimulation
-        </h1>
-        <p className="mt-4 max-w-4xl leading-7 text-[#675640]">
-          Diese Seite beschreibt den produktiven Weg vom Browser bis zum CUDA-Kernel.
-          Entscheidend ist die Trennung zwischen dem konsolidierten exakten Approach A
-          und dem komprimierten Approach B.
-        </p>
-      </header>
-
-      <section className="grid gap-4 lg:grid-cols-2">
-        {stages.map((stage) => (
-          <article
-            key={stage.title}
-            className="rounded-2xl border border-[#d8c5a5] bg-[#fffaf2] p-5 shadow-sm"
-          >
-            <h2 className="text-xl font-extrabold text-gray-950">
-              {stage.title}
-            </h2>
-            <code className="mt-2 block rounded-lg bg-[#f3e6d2] px-3 py-2 text-sm text-[#5d4c36]">
-              {stage.file}
-            </code>
-            <p className="mt-3 leading-7 text-[#675640]">
-              {stage.text}
-            </p>
-          </article>
-        ))}
-      </section>
-
-      <section className="mt-8 rounded-2xl border border-[#d8c5a5] bg-white p-6 shadow-sm">
-        <h2 className="text-2xl font-black text-gray-950">
-          Die kausale Rückkopplung
-        </h2>
-        <div className="mt-5 grid gap-3 md:grid-cols-5">
-          {feedback.map((item, index) => (
-            <div
-              key={item}
-              className="rounded-xl border border-[#e2d2b7] bg-[#fffaf2] p-4"
-            >
-              <div className="mb-2 text-sm font-black text-[#9a7410]">
-                {index + 1}
-              </div>
-              <p className="text-sm leading-6 text-[#675640]">
-                {item}
-              </p>
+    <main className="sunopt-doc-page px-4 py-10 sm:px-6">
+      <div className="mx-auto max-w-7xl">
+        <SunOptDocHeader label="SunOpt · Dokumentation" title="Wie wird Programmcode schneller ausgeführt?">
+          <p>Die linken grünen Boxen zeigen den Weg der Informationen durch das Programm. Rechts steht zu jedem Schritt, was tatsächlich passiert – ohne vorauszusetzen, dass man sich mit Softwareentwicklung auskennt.</p>
+          <p className="mt-2">Zuerst zeigen wir den allgemeinen CPU-JIT-Codepfad über Oxc und Cranelift. Die produktive GPU-Jahressimulation ist ein eigenständiger Ablauf und wird darunter erklärt.</p>
+        </SunOptDocHeader>
+        <section className="sunopt-panel px-4 py-6 sm:px-7" aria-label="CPU-JIT-Codepfad">
+          <h2 className="mb-6 text-2xl font-black text-[var(--sunopt-ink)]">Vom Messwert zum Maschinencode</h2>
+          {jitStages.map((stage, index) => (
+            <div key={stage.title}>
+              <SunOptFlowStep number={index + 1} title={stage.title} subtitle={stage.subtitle}
+                file={stage.file} description={<p>{stage.description}</p>} />
+              {index < jitStages.length - 1 && <div className="sunopt-flow-arrow" aria-hidden="true">↓</div>}
             </div>
           ))}
-        </div>
-        <p className="mt-5 leading-7 text-[#675640]">
-          Deshalb ist ein kompletter Jahreslauf pro Tank zeitlich sequenziell:
-          der Zustand des nächsten Schritts existiert erst nach dem physischen
-          Ergebnis des aktuellen Schritts. Parallelisiert werden die unabhängigen
-          Tanks beziehungsweise Jobs innerhalb desselben Zeitschritts.
-        </p>
-      </section>
-
-      <section className="mt-8 grid gap-4 md:grid-cols-2">
-        <article className="rounded-2xl border-2 border-[#365b8c] bg-[#eef4fb] p-6">
-          <h2 className="text-2xl font-black text-[#244268]">
-            Button A
-          </h2>
-          <p className="mt-3 leading-7 text-[#3e5570]">
-            Konsolidierter Approach A1–A7, exakte FP64-Physik. A darf nicht auf
-            den alten unoptimierten FP64-Zweig zeigen.
+          <p className="mt-6 text-sm leading-7 text-[var(--sunopt-muted)]">Hinweis: Dies ist eine verständliche Architekturübersicht. Je nach Berechnung können Vorbereitung, Worker-Aufruf und Cache-Nutzung variieren; nicht jede Rechenaufgabe durchläuft alle Schritte.</p>
+        </section>
+        <section className="sunopt-panel mt-8 px-4 py-6 sm:px-7" aria-label="GPU-Jahressimulation">
+          <h2 className="mb-4 text-2xl font-black text-[var(--sunopt-ink)]">Vom Jahresdatensatz zum CUDA-Ergebnis</h2>
+          <p className="mb-6 max-w-5xl leading-7 text-[var(--sunopt-muted)]">
+            Auch hier zeigen die grünen Kästen links den technischen Schritt und die Erklärungen rechts dessen Zweck. Anders als beim CPU-JIT werden im CUDA-Jahreslauf bereits vorhandene native GPU-Funktionen verwendet; er übersetzt den TypeScript-Code nicht bei jedem Aufruf neu.
           </p>
-        </article>
-
-        <article className="rounded-2xl border-2 border-[#7b5a00] bg-[#fff3c7] p-6">
-          <h2 className="text-2xl font-black text-[#624800]">
-            Button B
-          </h2>
-          <p className="mt-3 leading-7 text-[#66501e]">
-            B14P FP32 als Produktionssolver, mit kontrolliertem exaktem
-            FP64-Fallback für nicht unterstützte Fälle.
-          </p>
-        </article>
-      </section>
+          {cudaStages.map((stage, index) => (
+            <div key={stage.title}>
+              <SunOptFlowStep number={index + 1} title={stage.title} subtitle={stage.subtitle}
+                file={stage.file} description={<p>{stage.description}</p>} />
+              {index < cudaStages.length - 1 && <div className="sunopt-flow-arrow" aria-hidden="true">↓</div>}
+            </div>
+          ))}
+        </section>
+      </div>
     </main>
   );
 }

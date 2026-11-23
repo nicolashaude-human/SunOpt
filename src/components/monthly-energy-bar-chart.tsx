@@ -2,6 +2,8 @@
 
 "use client";
 
+import { MODEL_CHART_COLORS as MODEL_COLORS } from "@/styles/chart-palette";
+
 import {
   Bar,
   BarChart,
@@ -14,7 +16,6 @@ import {
 } from "recharts";
 
 import type {
-  ComparisonModelId,
   ModelComparisonResult,
 } from "@/types/model-comparison";
 
@@ -44,12 +45,6 @@ const MONTH_LABELS = [
   "Nov",
   "Dez",
 ] as const;
-
-const MODEL_COLORS: Record<ComparisonModelId, string> = {
-  existing: "#FFB300",
-  quantumGravity: "#803E75",
-  plasmaWave: "#FF6800",
-};
 
 function getValue(
   model: ModelComparisonResult | undefined,
@@ -108,13 +103,13 @@ export function MonthlyEnergyBarChart({
     );
 
   return (
-    <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+    <section className="rounded-2xl border border-[var(--sunopt-border-soft)] bg-[var(--sunopt-card)] p-5 shadow-sm">
       <div className="mb-5">
-        <h2 className="text-lg font-bold text-gray-950">
+        <h2 className="text-lg font-bold text-[var(--sunopt-ink)]">
           {title}
         </h2>
 
-        <p className="mt-1 text-sm leading-6 text-gray-500">
+        <p className="mt-1 text-sm leading-6 text-[var(--sunopt-soft-text)]">
           {description}
         </p>
       </div>

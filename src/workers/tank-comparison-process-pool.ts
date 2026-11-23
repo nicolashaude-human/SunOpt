@@ -45,6 +45,20 @@ export type TankComparisonWorkerRequest =
     };
 
 
+export type ApproachANativeScopes = Array<{
+  scopeId: string;
+  calls: number;
+  nativeCalls: number;
+  fallbackCalls: number;
+  failures: number;
+}>;
+
+export interface ApproachAProcessPoolResult {
+  points: TankComparisonPoint[];
+  workerCount: number;
+  nativeScopes: ApproachANativeScopes;
+}
+
 export type TankComparisonWorkerResponse =
   | {
       type: "ready";
@@ -52,6 +66,7 @@ export type TankComparisonWorkerResponse =
   | {
       type: "result";
       point: TankComparisonPoint;
+      nativeScopes: ApproachANativeScopes;
     }
   | {
       type: "error";
@@ -71,7 +86,7 @@ export interface TankComparisonProcessPoolInput {
 
 export async function runTankComparisonProcessPool(
   input: TankComparisonProcessPoolInput,
-): Promise<TankComparisonPoint[]> {
+): Promise<ApproachAProcessPoolResult> {
 
   const {
     workerCount,
@@ -86,7 +101,7 @@ export async function runTankComparisonProcessPool(
   }
 
   if (storageVolumes.length === 0) {
-    return [];
+    return { points: [], workerCount: 0, nativeScopes: [] };
   }
 
   const actualWorkerCount =
@@ -104,6 +119,9 @@ export async function runTankComparisonProcessPool(
   const workers:
     ChildProcess[] = [];
 
+  // Each worker reports cumulative counters; only its LAST snapshot counts.
+  const lastNativeScopes = new Map<number, ApproachANativeScopes>();
+
   const workerPath =
     path.join(
       process.cwd(),
@@ -113,7 +131,7 @@ export async function runTankComparisonProcessPool(
     );
 
   return new Promise<
-    TankComparisonPoint[]
+    ApproachAProcessPoolResult
   >((resolve, reject) => {
 
     let completedJobs = 0;
@@ -163,7 +181,28 @@ export async function runTankComparisonProcessPool(
 
       stopWorkers();
 
-      resolve(results);
+      const merged = new Map<string, ApproachANativeScopes[number]>();
+      for (const scopes of lastNativeScopes.values()) {
+        for (const status of scopes) {
+          const prior = merged.get(status.scopeId) ?? {
+            scopeId: status.scopeId,
+            calls: 0,
+            nativeCalls: 0,
+            fallbackCalls: 0,
+            failures: 0,
+          };
+          prior.calls += status.calls;
+          prior.nativeCalls += status.nativeCalls;
+          prior.fallbackCalls += status.fallbackCalls;
+          prior.failures += status.failures;
+          merged.set(status.scopeId, prior);
+        }
+      }
+      resolve({
+        points: results,
+        workerCount: actualWorkerCount,
+        nativeScopes: [...merged.values()],
+      });
     };
 
 
@@ -253,6 +292,7 @@ export async function runTankComparisonProcessPool(
             results.push(
               message.point,
             );
+            lastNativeScopes.set(workerIndex, message.nativeScopes);
 
             completedJobs += 1;
 
@@ -321,13 +361,12 @@ export async function runTankComparisonProcessPool(
         (code) => {
 
           if (
-            !settled &&
-            code !== 0
+            !settled
           ) {
 
             fail(
               new Error(
-                `Tank comparison worker exited with code ${code}.`,
+                `Tank comparison worker exited before completing the assigned work (code ${code}).`,
               ),
             );
           }

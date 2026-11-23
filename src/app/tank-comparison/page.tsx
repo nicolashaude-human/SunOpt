@@ -2,6 +2,8 @@
 
 "use client";
 
+import { KELLY_CHART_COLORS } from "@/styles/chart-palette";
+
 import {
   useMemo,
   useState,
@@ -24,6 +26,7 @@ import type {
   TankComparisonCausalPath,
   TankComparisonRequest,
   TankComparisonResponse,
+  TankComparisonThermalReserve,
 } from "@/types/tank-comparison";
 
 const HEAT_PUMP_POWER_OPTIONS = [
@@ -52,7 +55,7 @@ const SINGLE_SERIES:
     name:
       "Wert",
     color:
-      "#803E75",
+      KELLY_CHART_COLORS[1],
   },
 ];
 
@@ -66,6 +69,66 @@ function formatMoney(
   value: number,
 ): string {
   return `${value.toFixed(2)} CHF`;
+}
+
+function ThermalReserveChart({
+  reserve,
+  volumes,
+}: {
+  reserve: TankComparisonThermalReserve;
+  volumes: number[];
+}) {
+  const [annualHeatingInput, setAnnualHeatingInput] = useState("");
+  const annualHeatingKWh = Number(annualHeatingInput);
+  const heating = reserve.spaceHeating;
+  const heatingKWh = Number.isFinite(annualHeatingKWh) && annualHeatingKWh > 0
+    ? annualHeatingKWh * (heating?.peakWeekShare ?? 0)
+    : 0;
+  const totalDemandKWh = reserve.maxHotWaterDemandKWh + heatingKWh;
+  const days = reserve.horizonHours / 24;
+  const litres = Math.round(totalDemandKWh / reserve.usableCapacityKWhPerLitre);
+  const demand = heatingKWh > 0
+    ? `${totalDemandKWh.toFixed(1)} kWh thermisch, davon ${heatingKWh.toFixed(1)} für Raumheizung und ${reserve.maxHotWaterDemandKWh.toFixed(1)} für Warmwasser`
+    : `${reserve.maxHotWaterDemandKWh.toFixed(1)} kWh thermisch für Warmwasser`;
+
+  return (
+    <div className="space-y-3">
+      {heating && (
+        <div className="rounded-2xl border border-[var(--sunopt-border)] bg-[var(--sunopt-bg)] p-5">
+          <label className="block text-sm font-semibold" htmlFor="tank-annual-heating">
+            Jahres-Heizwärmebedarf zusätzlich zum Warmwasser (kWh, optional)
+          </label>
+          <input
+            id="tank-annual-heating"
+            type="number"
+            min="0"
+            step="any"
+            value={annualHeatingInput}
+            onChange={event => setAnnualHeatingInput(event.target.value)}
+            className="mt-2 w-full max-w-60 rounded-md border border-[var(--sunopt-border)] px-3 py-2"
+          />
+          <p className="mt-2 text-sm text-[var(--sunopt-muted)]">
+            Das Heizprofil verteilt den Jahresbedarf nach Aussentemperatur.
+            Annahmen für die Berechnung sind {heating.indoorTemperatureC} °C Raumtemperatur und
+            eine Heizgrenze von {heating.heatingLimitTemperatureC} °C. Die Tanklauf-Ergebnisse
+            basieren auf Warmwasser. Der Raumheizbedarf fliesst in die Bedarfsmarkierung ein.
+          </p>
+        </div>
+      )}
+      <BarChart
+        title="Nutzbare Speicherkapazität und Wärmebedarf"
+        description={`Die gestrichelte Linie zeigt den höchsten Bedarf in ${days} aufeinanderfolgenden Tagen: ${demand}. Bei ${reserve.minimumTemperatureC}–${reserve.maximumTemperatureC} °C entspricht das rund ${litres.toLocaleString("de-CH")} l Speichervolumen ohne Speicherverluste.`}
+        data={volumes.map(volume => ({
+          tank: `${volume} L`,
+          capacity: volume * reserve.usableCapacityKWhPerLitre,
+        }))}
+        xAxisKey="tank"
+        series={[{ dataKey: "capacity", name: "Nutzbare Speicherkapazität", color: KELLY_CHART_COLORS[1] }]}
+        unit="kWh th."
+        referenceValue={totalDemandKWh}
+      />
+    </div>
+  );
 }
 
 export default function TankComparisonPage() {
@@ -276,7 +339,7 @@ function chartData(
     <main
       className="
         min-h-screen
-        bg-[#ffe1a6]
+        bg-[var(--sunopt-page)]
         px-4 py-8
         sm:px-6
       "
@@ -298,7 +361,7 @@ function chartData(
               className="
                 text-3xl font-bold
                 tracking-tight
-                text-gray-950
+                text-[var(--sunopt-ink)]
               "
             >
               Tankvergleich
@@ -308,7 +371,7 @@ function chartData(
               className="
                 mt-3 max-w-4xl
                 leading-7
-                text-[#675640]
+                text-[var(--sunopt-muted)]
               "
             >
               Vergleich der
@@ -336,8 +399,8 @@ function chartData(
         <section
           className="
             mb-6 rounded-2xl
-            border border-[#d8c5a5]
-            bg-[#ffedca]
+            border border-[var(--sunopt-border-soft)]
+            bg-[var(--sunopt-panel)]
             p-5 shadow-sm
           "
         >
@@ -345,7 +408,7 @@ function chartData(
             className="
               mb-4 text-xl
               font-bold
-              text-gray-950
+              text-[var(--sunopt-ink)]
             "
           >
             Randbedingungen
@@ -366,7 +429,7 @@ function chartData(
               <span
                 className="
                   text-sm font-semibold
-                  text-[#675640]
+                  text-[var(--sunopt-muted)]
                 "
               >
                 Wärmepumpe
@@ -388,8 +451,8 @@ function chartData(
                 }
                 className="
                   rounded-lg
-                  border border-[#d8c5a5]
-                  bg-[#fffaf0]
+                  border border-[var(--sunopt-border-soft)]
+                  bg-[var(--sunopt-bg)]
                   px-3 py-2.5
                   font-semibold
                 "
@@ -417,7 +480,7 @@ function chartData(
               <span
                 className="
                   text-sm font-semibold
-                  text-[#675640]
+                  text-[var(--sunopt-muted)]
                 "
               >
                 PV-Anlage
@@ -439,8 +502,8 @@ function chartData(
                 }
                 className="
                   rounded-lg
-                  border border-[#d8c5a5]
-                  bg-[#fffaf0]
+                  border border-[var(--sunopt-border-soft)]
+                  bg-[var(--sunopt-bg)]
                   px-3 py-2.5
                   font-semibold
                 "
@@ -468,7 +531,7 @@ function chartData(
               <span
                 className="
                   text-sm font-semibold
-                  text-[#675640]
+                  text-[var(--sunopt-muted)]
                 "
               >
                 Netzbezug
@@ -491,8 +554,8 @@ function chartData(
                 }
                 className="
                   rounded-lg
-                  border border-[#d8c5a5]
-                  bg-[#fffaf0]
+                  border border-[var(--sunopt-border-soft)]
+                  bg-[var(--sunopt-bg)]
                   px-3 py-2.5
                   font-semibold
                 "
@@ -507,7 +570,7 @@ function chartData(
               <span
                 className="
                   text-sm font-semibold
-                  text-[#675640]
+                  text-[var(--sunopt-muted)]
                 "
               >
                 Einspeisung
@@ -530,8 +593,8 @@ function chartData(
                 }
                 className="
                   rounded-lg
-                  border border-[#d8c5a5]
-                  bg-[#fffaf0]
+                  border border-[var(--sunopt-border-soft)]
+                  bg-[var(--sunopt-bg)]
                   px-3 py-2.5
                   font-semibold
                 "
@@ -551,7 +614,7 @@ function chartData(
               className="
                 max-w-4xl text-sm
                 leading-6
-                text-[#675640]
+                text-[var(--sunopt-muted)]
               "
             >
               Preise in CHF/kWh.
@@ -571,7 +634,7 @@ function chartData(
               }
               className="
                 rounded-lg
-                bg-gray-900
+                bg-[var(--sunopt-ink)]
                 px-4 py-2.5
                 text-sm font-semibold
                 text-white
@@ -607,8 +670,8 @@ function chartData(
             <section
               className="
                 rounded-2xl
-                border border-[#d8c5a5]
-                bg-[#ffedca]
+                border border-[var(--sunopt-border-soft)]
+                bg-[var(--sunopt-panel)]
                 p-5 shadow-sm
               "
             >
@@ -616,7 +679,7 @@ function chartData(
                 className="
                   mb-4 text-2xl
                   font-bold
-                  text-gray-950
+                  text-[var(--sunopt-ink)]
                 "
               >
                 Vergleich {result.year}
@@ -679,7 +742,7 @@ function chartData(
                 className="
                   mt-4 text-sm
                   leading-6
-                  text-[#675640]
+                  text-[var(--sunopt-muted)]
                 "
               >
                 Noch ohne
@@ -691,6 +754,13 @@ function chartData(
                 wirtschaftliches Optimum.
               </p>
             </section>
+
+            {result.thermalReserve && (
+              <ThermalReserveChart
+                reserve={result.thermalReserve}
+                volumes={result.points.map(point => point.storageVolume)}
+              />
+            )}
 
             <BarChart
               title="Netzbezug nach Tankgrösse"
@@ -707,7 +777,8 @@ function chartData(
             />
 
             <BarChart
-              title="Einspeisung nach Tankgrösse"
+              title="PV-Netzeinspeisung nach Tankgrösse"
+              description="PV-Strom nach Abzug der modellierten Haushaltslast und des tatsächlichen Wärmepumpenverbrauchs."
               data={
                 chartData(
                   "feedIn",
@@ -721,7 +792,8 @@ function chartData(
             />
 
             <BarChart
-              title="Eigenverbrauch nach Tankgrösse"
+              title="PV-Eigenverbrauch nach Tankgrösse"
+              description="PV-Strom für die modellierte Haushaltslast und die Wärmepumpe."
               data={
                 chartData(
                   "selfConsumption",
@@ -767,8 +839,8 @@ function chartData(
 <section
   className="
     rounded-2xl
-    border border-[#d8c5a5]
-    bg-[#ffedca]
+    border border-[var(--sunopt-border-soft)]
+    bg-[var(--sunopt-panel)]
     p-5 shadow-sm
   "
 >
@@ -782,7 +854,7 @@ function chartData(
     <h2
       className="
         text-2xl font-bold
-        text-gray-950
+        text-[var(--sunopt-ink)]
       "
     >
       Simulationsperformance
@@ -860,7 +932,7 @@ function chartData(
     className="
       mt-4 text-sm
       leading-6
-      text-[#675640]
+      text-[var(--sunopt-muted)]
     "
   >
     Historische Datenaufbereitung:{" "}

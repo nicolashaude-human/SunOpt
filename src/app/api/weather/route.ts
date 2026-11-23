@@ -40,7 +40,10 @@ export async function POST(
     const weatherData =
       getCachedWeatherData(
         body,
-      );
+      ).map(point => ({
+        ...point,
+        outdoorTemperature: point.temperature,
+      }));
 
     return NextResponse.json(
       {

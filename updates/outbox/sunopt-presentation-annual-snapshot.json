@@ -1,0 +1,13 @@
+{
+  "status": "PASS",
+  "captureWallMs": 1843.9134999999999,
+  "simulationDurationMs": 8684.74170000013,
+  "dataPoints": 35040,
+  "year": 2023,
+  "volume": 3000,
+  "staticJson": "C:\\NextJS\\SunOpt\\sunopt\\public\\presentation\\annual-simulation-static.json",
+  "staticHtml": "C:\\NextJS\\SunOpt\\sunopt\\public\\presentation\\annual-simulation-static.html",
+  "staticSeries": "C:\\NextJS\\SunOpt\\sunopt\\public\\presentation\\annual-simulation-static-series.json",
+  "standaloneHtml": "C:\\NextJS\\SunOpt\\sunopt\\public\\presentation\\index.html",
+  "sha256": "effb18bad840d5b27f92c2d099aceaa622ebfeb383a8382ba2226415ff086cc8"
+}

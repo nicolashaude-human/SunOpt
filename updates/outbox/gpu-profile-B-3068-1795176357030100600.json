@@ -1,0 +1,44 @@
+{
+  "context": "B",
+  "method": "NVAPI_B14PQ_VF_CURVE_GUARD",
+  "target": {
+    "smClockMHz": 3480,
+    "fanPercent": 70,
+    "voltageMv": 1050,
+    "nativeVfFrequencyMHz": 2865,
+    "curveOffsetMHz": 625,
+    "capBandPoints": 8
+  },
+  "targetAcceptedByDriver": true,
+  "verifiedClockUnderLoad": true,
+  "fanTelemetryVerified": false,
+  "fanControlSetAccepted": true,
+  "fanControlVerification": "NVAPI_MODE1_70_PERCENT_READBACK",
+  "fanObservedSpeedsPercent": {
+    "min": 38,
+    "max": 62
+  },
+  "compliant": true,
+  "probePassed": false,
+  "endReason": "requested_stop",
+  "elapsedSeconds": 6.257,
+  "sampleCount": 41,
+  "underLoadSamples": 37,
+  "underLoadSmClockMinMHz": 3480,
+  "underLoadSmClockMaxMHz": 3480,
+  "underLoadSmClockMedianMHz": 3480,
+  "underLoadSmClockSpanMHz": 0,
+  "underLoadSamplesInTargetRange": 37,
+  "maximumTemperatureC": 43,
+  "restoreError": null,
+  "restoreConfirmed": true,
+  "error": null,
+  "guardLog": "C:\\NextJS\\SunOpt\\sunopt\\updates\\outbox\\sunopt-nvapi-guard-productive-B-3068-1795176357057300100.txt",
+  "legacyDone": {
+    "exitCode": 0,
+    "generated": "2026-11-20T13:06:03.204867+01:00",
+    "restoreOk": true,
+    "status": "DONE"
+  },
+  "hardwareSafetyNote": "Temperature monitor stops NVAPI guard and resets clocks on limit; synchronous CUDA sweep cannot be interrupted by this Python sidecar."
+}

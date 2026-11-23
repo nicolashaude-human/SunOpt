@@ -2,6 +2,8 @@
 
 "use client";
 
+import { KELLY_CHART_COLORS } from "@/styles/chart-palette";
+
 import {
   useEffect,
   useMemo,
@@ -270,43 +272,43 @@ interface ModelSummary {
  */
 
 const COLOR_EXISTING =
-  "#FFB300";
+  KELLY_CHART_COLORS[0];
 
 const COLOR_QUANTUM =
-  "#803E75";
+  KELLY_CHART_COLORS[1];
 
 const COLOR_PLASMA =
-  "#FF6800";
+  KELLY_CHART_COLORS[2];
 
 const COLOR_REQUIRED =
-  "#C10020";
+  KELLY_CHART_COLORS[4];
 
 const COLOR_HP =
-  "#A6BDD7";
+  KELLY_CHART_COLORS[3];
 
 const COLOR_STORAGE =
-  "#007D34";
+  KELLY_CHART_COLORS[7];
 
 const COLOR_PV =
-  "#F6768E";
+  KELLY_CHART_COLORS[8];
 
 const COLOR_EXPORT_BEFORE =
-  "#FFB300";
+  KELLY_CHART_COLORS[0];
 
 const COLOR_EXPORT_AFTER =
-  "#803E75";
+  KELLY_CHART_COLORS[1];
 
 const COLOR_SCHEDULED_HP =
-  "#FF6800";
+  KELLY_CHART_COLORS[2];
 
 const COLOR_WATER_LEVEL =
-  "#C10020";
+  KELLY_CHART_COLORS[4];
 
 const COLOR_NO_SUNSHINE_WATERLINE =
-  "#CEA262";
+  KELLY_CHART_COLORS[5];
 
 const COLOR_NO_SUNSHINE_HP_TOP =
-  "#53377A";
+  KELLY_CHART_COLORS[11];
 
 const CHART_HEIGHT =
   380;
@@ -1068,17 +1070,17 @@ if (
 
   return (
 
-    <main className="min-h-screen p-8">
+    <main className="sunopt-page sunopt-year-page min-h-screen px-4 py-8 sm:px-6">
 
       <div className="mx-auto max-w-7xl">
 
         <h1 className="mb-2 text-3xl font-bold">
-          SunOpt – Hot Water Debug
+          Jahressimulation
         </h1>
 
 
         <p className="mb-8 text-sm opacity-70">
-          Complete annual simulation. Month selection only changes the displayed data.
+          Die Berechnung umfasst das ganze Jahr. Die Monatsauswahl verändert nur die Anzeige, nicht das Simulationsergebnis.
         </p>
 
 
@@ -1088,14 +1090,14 @@ if (
          * ========================================================
          */}
 
-        <div className="mb-4 flex flex-wrap items-end gap-4">
+        <div className="sunopt-control-panel mb-4 flex flex-wrap items-end gap-4">
 
           <InputBox
-            label="Month"
+            label="Monat"
           >
 
             <select
-              className="h-10 w-40 rounded border px-3"
+              className="sunopt-form-field h-10 w-40"
               value={
                 month
               }
@@ -1148,11 +1150,11 @@ if (
 
 
           <InputBox
-            label="Storage volume [L]"
+            label="Speichervolumen [L]"
           >
 
             <input
-              className="h-10 w-40 rounded border px-3"
+              className="sunopt-form-field h-10 w-40"
               type="number"
               step="100"
               min="100"
@@ -1176,11 +1178,11 @@ if (
 
 
           <InputBox
-            label="Safety margin [%]"
+            label="Sicherheitszuschlag [%]"
           >
 
             <input
-              className="h-10 w-40 rounded border px-3"
+              className="sunopt-form-field h-10 w-40"
               type="number"
               step="5"
               min="0"
@@ -1203,7 +1205,7 @@ if (
           </InputBox>
 
           <button
-            className="h-10 rounded border px-6"
+            className="sunopt-action-button h-10 px-6"
             onClick={
               runSimulation
             }
@@ -1214,14 +1216,14 @@ if (
 
             {
               loading
-                ? "Simulating year..."
-                : "Run simulation"
+                ? "Jahressimulation läuft …"
+                : "Jahressimulation starten"
             }
 
           </button>
 
 
-          <div className="flex h-10 min-w-[260px] flex-col justify-center gap-1">
+          <div className="sunopt-value-box flex min-h-10 min-w-[260px] flex-col justify-center gap-1">
 
   <span className="text-xs opacity-60">
     {
@@ -1230,7 +1232,7 @@ if (
         : result
           ? `Complete – ${(result.simulationDurationMs / 1000)
               .toFixed(1)} s`
-          : "Not calculated"
+          : "Noch nicht berechnet"
     }
   </span>
 
@@ -1251,14 +1253,14 @@ if (
          * ========================================================
          */}
 
-        <div className="mb-8 flex flex-wrap gap-4">
+        <div className="sunopt-control-panel mb-8 flex flex-wrap gap-4">
 
           <InputBox
-            label="Model 1"
+            label="Modell 1"
           >
 
             <select
-              className="h-10 min-w-[220px] rounded border px-3"
+              className="sunopt-form-field h-10 min-w-[220px]"
               value={
                 model1
               }
@@ -1292,11 +1294,11 @@ if (
 
 
           <InputBox
-            label="Model 2"
+            label="Modell 2"
           >
 
             <select
-              className="h-10 min-w-[220px] rounded border px-3"
+              className="sunopt-form-field h-10 min-w-[220px]"
               value={
                 model2
               }
@@ -1338,7 +1340,7 @@ if (
         {
           error && (
 
-            <div className="mb-8 rounded border p-4">
+            <div className="sunopt-card mb-8 p-4">
               {error}
             </div>
           )
@@ -2040,9 +2042,9 @@ function InputBox(
 
   return (
 
-    <label className="flex flex-col gap-1">
+    <label className="flex flex-col gap-2">
 
-      <span className="h-5 text-sm">
+      <span className="h-5 text-sm font-semibold text-[var(--sunopt-muted)]">
         {props.label}
       </span>
 
@@ -2072,7 +2074,7 @@ function ModelSummaryBox(
 
   return (
 
-    <section className="rounded-lg border p-4">
+    <section className="sunopt-card rounded-lg p-4">
 
       <h2 className="mb-4 text-lg font-semibold">
         {props.title}
@@ -2148,7 +2150,7 @@ function Summary(
 
   return (
 
-    <div className="rounded border p-3">
+    <div className="sunopt-value-box">
 
       <div className="text-xs opacity-60">
         {props.label}
@@ -2377,7 +2379,7 @@ function ChartBox(
 
   return (
 
-    <section className="mb-8 rounded-lg border border-gray-300 bg-white p-4">
+    <section className="sunopt-card mb-8 p-4">
 
       <h2 className="mb-3 text-lg font-semibold">
         {props.title}
@@ -2399,7 +2401,7 @@ function ChartBox(
          */}
 
         <div
-          className="w-[86px] shrink-0 bg-white"
+          className="w-[86px] shrink-0 bg-[var(--sunopt-card)]"
           style={{
             height:
               CHART_HEIGHT,

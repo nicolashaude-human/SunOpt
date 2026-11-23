@@ -1,0 +1,1418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SunOpt Project Structure</title>
+<link rel="stylesheet" href="/styles/sunopt-theme.css">
+<style>
+  :root { font-family: system-ui, sans-serif; color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--sunopt-page); color: var(--sunopt-ink); }
+  .site-nav {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: .5rem;
+    padding: .8rem 1rem; border-bottom: 1px solid var(--sunopt-border);
+    background: var(--sunopt-bg); backdrop-filter: blur(8px);
+    overflow-x: auto;
+  }
+  .site-nav a {
+    color: var(--sunopt-muted); text-decoration: none; font-size: .9rem;
+    font-weight: 650; padding: .5rem .7rem; border-radius: .5rem;
+    white-space: nowrap;
+  }
+  .site-nav a:hover { background: var(--sunopt-panel-hover); color: var(--sunopt-ink); }
+  .site-nav a.active { background: var(--sunopt-accent); color: white; }
+  .site-nav .brand { margin-right: .5rem; font-weight: 800; color: var(--sunopt-ink); }
+  .content { max-width: 1200px; margin: 2rem auto; padding: 0 1rem 4rem; }
+  ul { list-style: none; padding-left: 1.4rem; }
+  li { margin: .2rem 0; }
+  summary { cursor: pointer; font-weight: 650; }
+  .description { opacity: .7; margin-left: .5rem; }
+  .candidate { border-left: 3px solid var(--sunopt-accent); padding-left: .5rem; }
+  .meta { opacity: .7; }
+  code { font-size: .95em; }
+</style>
+</head>
+<body>
+<nav class="site-nav">
+  <a class="brand" href="/">SunOpt</a>
+  <a href="/project-status">Projektstatus</a>
+  <a href="/model-comparison">Modellvergleich</a>
+  <a href="/debug/hot-water">Jahressimulation</a>
+  <a href="/debug/project-cleanup">Project Cleanup</a>
+  <a class="active" href="/project-structure.html">Project Structure</a>
+</nav>
+<div class="content">
+<h1>SunOpt Project Structure</h1>
+<p class="meta">Generated 2026-10-23T13:59:20.971Z · Scan <code>4d2e87d99784009b51ca</code></p>
+<p>128 files · 31 entry points · 83 reachable · 4 cleanup candidates.</p>
+<ul>
+
+        <li>
+          <details open>
+            <summary>📁 sunopt</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 data</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 cache</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 hot-water</summary>
+            <ul>
+              
+      <li class="">
+        📄
+        <code>0586370217a6b60c59af68b00ca48adfcacfdf0b1e6c41e1667b4db8ee46a25e.json.gz</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>26a4841112a6ba25ee4c8dc1f849caa797d9c853c467aeb2b7c0ffa944a70134.json.gz</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>2a3d4b248195d2cc135d20773e830ddf105eafd4f5e385ab2ab01c0b2de6e27d.json.gz</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>50ed5417923464a8aafd44eccf26b4d21d3c9eada4bd9f51f5d9adc7195754ec.json.gz</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>6cfda99b461402517118b21f91425883d39c8839ab8b0b768cf5fabb0be1940d.json.gz</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>83889326663e5b6a25356d879e21700674d4f4d60011e256ea4e81f1cafff93c.json.gz</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>84429b246a31b8aa75c4f12ea492fac46957720d018957420abb9649d445d58b.json.gz</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>fb1850d92e22a8b22553ed05795347e9c586f3c6b936d1fce186d97394b21434.json.gz</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 localities</summary>
+            <ul>
+              
+      <li class="">
+        ⚙️
+        <code>localities.json</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 public</summary>
+            <ul>
+              
+      <li class="">
+        📄
+        <code>file.svg</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>globe.svg</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>next.svg</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>vercel.svg</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>window.svg</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 rust</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 sunopt-core</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 examples</summary>
+            <ul>
+              
+      <li class="candidate">
+        🦀
+        <code>inspect_rust_payload.rs</code>
+        <span class="description">cleanup candidate; inbound 0; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 src</summary>
+            <ul>
+              
+      <li class="">
+        🦀
+        <code>lib.rs</code>
+        <span class="description">entry point; inbound 0; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+      <li class="">
+        📄
+        <code>Cargo.lock</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>Cargo.toml</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 sunopt-node</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 src</summary>
+            <ul>
+              
+      <li class="">
+        🦀
+        <code>lib.rs</code>
+        <span class="description">entry point; inbound 0; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+      <li class="">
+        🦀
+        <code>build.rs</code>
+        <span class="description">entry point; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>Cargo.lock</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>Cargo.toml</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="candidate">
+        📘
+        <code>index.d.ts</code>
+        <span class="description">cleanup candidate; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="candidate">
+        📄
+        <code>index.js</code>
+        <span class="description">module facade / exports</span>
+      </li>
+    
+
+      <li class="">
+        ⚙️
+        <code>package-lock.json</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        ⚙️
+        <code>package.json</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>sunopt_node.win32-x64-msvc.node</code>
+        <span class="description">project file; inbound 1; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 scripts</summary>
+            <ul>
+              
+      <li class="">
+        📄
+        <code>test-global-acceleration-parity.mjs</code>
+        <span class="description">entry point; inbound 0; imports 1</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>test-global-acceleration-scopes.mjs</code>
+        <span class="description">entry point; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>test-rust-no-sunshine.mjs</code>
+        <span class="description">entry point; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>update-localities.ts</code>
+        <span class="description">entry point; inbound 0; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 src</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 app</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 api</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 debug</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 hot-water</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 project-cleanup</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 apply</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 commit-delete</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 commit-old</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 delete</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 documentation</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 git-status</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 scan</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+            </ul>
+          </details>
+        </li>
+      
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 heat-pump</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 hot-water</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 location</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 model-comparison</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 optimization</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 hot-water</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 simulation</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 combined</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 hot-water</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 space-heating</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 storage</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 weather</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>route.ts</code>
+        <span class="description">Next.js API route</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 debug</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 hot-water</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>page.tsx</code>
+        <span class="description">Next.js page entry point</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 project-cleanup</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>page.tsx</code>
+        <span class="description">Next.js page entry point</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 model-comparison</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>page.tsx</code>
+        <span class="description">Next.js page entry point</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 project-status</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>page.tsx</code>
+        <span class="description">Next.js page entry point</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+      <li class="">
+        📄
+        <code>globals.css</code>
+        <span class="description">reachable module; inbound 1; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>icon.png</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>layout.tsx</code>
+        <span class="description">Next.js layout entry point</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>page.tsx</code>
+        <span class="description">Next.js page entry point</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 components</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 config</summary>
+            <ul>
+              
+      <li class="candidate">
+        📘
+        <code>config.ts</code>
+        <span class="description">cleanup candidate; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>powershell.txt</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+      <li class="">
+        📘
+        <code>site-navigation.tsx</code>
+        <span class="description">reachable module; inbound 1; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 config</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>config.ts</code>
+        <span class="description">reachable module; inbound 6; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 domain</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>building.ts</code>
+        <span class="description">reachable module; inbound 2; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>combined-heat-demand-calculation.ts</code>
+        <span class="description">reachable module; inbound 1; imports 3</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>combined-heat-demand.ts</code>
+        <span class="description">reachable module; inbound 2; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>combined-storage.ts</code>
+        <span class="description">reachable module; inbound 1; imports 1</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>default-hot-water-profile.ts</code>
+        <span class="description">reachable module; inbound 1; imports 1</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>heat-pump-calculation.ts</code>
+        <span class="description">reachable module; inbound 2; imports 1</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>heat-pump.ts</code>
+        <span class="description">reachable module; inbound 3; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>hot-water-calculation.ts</code>
+        <span class="description">reachable module; inbound 1; imports 2</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>hot-water-control.ts</code>
+        <span class="description">reachable module; inbound 2; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>hot-water-forecast-control.ts</code>
+        <span class="description">reachable module; inbound 1; imports 7</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>hot-water.ts</code>
+        <span class="description">reachable module; inbound 7; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>index.ts</code>
+        <span class="description">module facade / exports</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>location.ts</code>
+        <span class="description">reachable module; inbound 1; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>pv-analysis.ts</code>
+        <span class="description">reachable module; inbound 1; imports 1</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>pv-system.ts</code>
+        <span class="description">reachable module; inbound 1; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>simulation-result</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>space-heating-calculation.ts</code>
+        <span class="description">reachable module; inbound 1; imports 3</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>space-heating.ts</code>
+        <span class="description">reachable module; inbound 3; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>thermal-storage-calculation.ts</code>
+        <span class="description">reachable module; inbound 7; imports 2</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>thermal-storage.ts</code>
+        <span class="description">reachable module; inbound 6; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>weather.ts</code>
+        <span class="description">reachable module; inbound 5; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 lib</summary>
+            <ul>
+              
+        <li>
+          <details open>
+            <summary>📁 project-cleanup</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>cleanup-plan.ts</code>
+        <span class="description">reachable module; inbound 2; imports 3</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>git-safety.ts</code>
+        <span class="description">reachable module; inbound 4; imports 1</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>project-tree.ts</code>
+        <span class="description">reachable module; inbound 2; imports 1</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>scanner.ts</code>
+        <span class="description">reachable module; inbound 3; imports 1</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>types.ts</code>
+        <span class="description">reachable module; inbound 6; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 optimization</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>hot-water-storage-optimizer.ts</code>
+        <span class="description">reachable module; inbound 1; imports 3</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>optimization-types.ts</code>
+        <span class="description">reachable module; inbound 2; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 server</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>localities.ts</code>
+        <span class="description">reachable module; inbound 2; imports 1</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>pvgis.ts</code>
+        <span class="description">reachable module; inbound 1; imports 1</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+
+        <li>
+          <details open>
+            <summary>📁 simulation</summary>
+            <ul>
+              
+      <li class="">
+        📘
+        <code>combined-simulation.ts</code>
+        <span class="description">reachable module; inbound 1; imports 2</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>combined-waterline-scheduler.ts</code>
+        <span class="description">reachable module; inbound 1; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>control-model-plasma-wave.ts</code>
+        <span class="description">reachable module; inbound 2; imports 6</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>control-model-quantum-gravity.ts</code>
+        <span class="description">reachable module; inbound 2; imports 3</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>experimental_QuantumGravety.ts</code>
+        <span class="description">reachable module; inbound 1; imports 3</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>global-acceleration-scope.ts</code>
+        <span class="description">reachable module; inbound 2; imports 1</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>hot-water-control-model.ts</code>
+        <span class="description">reachable module; inbound 3; imports 1</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>hot-water-demand-forecast.ts</code>
+        <span class="description">reachable module; inbound 2; imports 3</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>hot-water-simulation-cache.ts</code>
+        <span class="description">reachable module; inbound 1; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>hot-water-simulation.ts</code>
+        <span class="description">reachable module; inbound 4; imports 4</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>plasma-wave-15min-model.ts</code>
+        <span class="description">reachable module; inbound 2; imports 1</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>plasma-wave-acceleration-scope.ts</code>
+        <span class="description">reachable module; inbound 1; imports 4</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>plasma-wave-peak-shaving-scheduler-profiled.ts</code>
+        <span class="description">reachable module; inbound 1; imports 3</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>plasma-wave-user-forecast-all-packages.ts</code>
+        <span class="description">reachable module; inbound 1; imports 2</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>resample-to-quarter-hour.ts</code>
+        <span class="description">reachable module; inbound 2; imports 1</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>rust-acceleration-adapters.ts</code>
+        <span class="description">reachable module; inbound 2; imports 6</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>rust-acceleration-runtime.ts</code>
+        <span class="description">reachable module; inbound 1; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>rust-acceleration-scopes.ts</code>
+        <span class="description">reachable module; inbound 2; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>simulation-types.ts</code>
+        <span class="description">reachable module; inbound 3; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>space-heating-simulation.ts</code>
+        <span class="description">reachable module; inbound 1; imports 2</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+            </ul>
+          </details>
+        </li>
+      
+
+      <li class="">
+        📄
+        <code>.gitignore</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📝
+        <code>AGENTS.md</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📝
+        <code>CLAUDE.md</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        ⚙️
+        <code>cleanup-analysis.example.json</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>eslint.config.mjs</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>next-env.d.ts</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📘
+        <code>next.config.ts</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📝
+        <code>notes.md</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        ⚙️
+        <code>package-lock.json</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        ⚙️
+        <code>package.json</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>postcss.config.mjs</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>README_INSTALL.txt</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📝
+        <code>README.md</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>README.txt</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>sunopt-node-bridge.zip</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        ⚙️
+        <code>tsconfig.json</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+
+      <li class="">
+        📄
+        <code>tsconfig.tsbuildinfo</code>
+        <span class="description">project file; inbound 0; imports 0</span>
+      </li>
+    
+            </ul>
+          </details>
+        </li>
+      
+</ul>
+</div>
+</body>
+</html>
