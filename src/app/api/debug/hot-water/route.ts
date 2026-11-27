@@ -51,12 +51,9 @@ import {
 } from "@/simulation/hot-water-simulation-cache";
 
 
+import { getCachedWeatherData, initializeReferenceWeatherCache } from "@/server/reference-weather-cache";
+
 export const runtime = "nodejs";
-
-
-interface WeatherApiResponse {
-  weatherData: WeatherData;
-}
 
 
 interface RequestBody {
@@ -160,39 +157,17 @@ export async function POST(
      * WEATHER – COMPLETE YEAR
      * ============================================================
      */
-    const weatherResponse = await fetch(
-      `${request.nextUrl.origin}/api/weather`,
-      {
-        method: "POST",
-
-        headers: {
-          "Content-Type": "application/json",
-        },
-
-        body: JSON.stringify({
-          postalCode: body.postalCode,
-          pvSystem: body.pvSystem,
-          startYear: body.year,
-          endYear: body.year,
-        }),
-
-        cache: "no-store",
-      },
-    );
-
-
-    if (!weatherResponse.ok) {
-      const errorText = await weatherResponse.text();
-
-      throw new Error(
-        `Weather API failed: ${errorText}`,
-      );
-    }
-
-
-    const weatherResult =
-      (await weatherResponse.json()) as WeatherApiResponse;
-
+    await initializeReferenceWeatherCache();
+    const weatherData: WeatherData = getCachedWeatherData({
+      postalCode: body.postalCode,
+      pvSystem: body.pvSystem,
+      startYear: body.year,
+      endYear: body.year,
+    }).map(point => ({
+      ...point,
+      outdoorTemperature: point.temperature ?? Number.NaN,
+      irradiance: point.irradiance ?? 0,
+    }));
 
     /*
      * ============================================================
@@ -203,7 +178,7 @@ export async function POST(
       calculateAnnualHotWaterDemand(
         body.hotWaterDemand,
         DEFAULT_HOT_WATER_PROFILE,
-        weatherResult.weatherData,
+        weatherData,
       );
 
 
@@ -214,7 +189,7 @@ export async function POST(
      */
     const quarterHour =
       resampleToQuarterHour(
-        weatherResult.weatherData,
+        weatherData,
         hourlyHotWaterData,
       );
 
