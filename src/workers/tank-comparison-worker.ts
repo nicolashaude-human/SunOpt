@@ -1,8 +1,6 @@
 // src/workers/tank-comparison-worker.ts
 
-import type {
-  ThermalStorage,
-} from "@/domain";
+import { createTankComparisonStorage } from "@/simulation/tank-comparison-thermal-reserve";
 
 import {
   HOT_WATER_TEST_CONFIG,
@@ -20,10 +18,7 @@ import type {
   TankComparisonPoint,
 } from "@/types/tank-comparison";
 
-import {
-  getSunOptNativeBinding,
-  getAllNativeScopeStatus,
-} from "@/simulation/rust-acceleration-runtime";
+import { getAllNativeScopeStatus } from "@/simulation/rust-acceleration-runtime";
 
 import type {
   ApproachANativeScopes,
@@ -68,68 +63,7 @@ function simulateTank(
   }
 
 
-  /*
-   * ==============================================================
-   * STORAGE
-   * ==============================================================
-   */
-
-  const storage:
-    ThermalStorage = {
-
-    volume:
-      storageVolume,
-
-    minTemperature:
-      60,
-
-    maxTemperature:
-      75,
-
-    initialTemperature:
-      60,
-
-    insulation: {
-      thermalConductivity:
-        0.030,
-
-      thickness:
-        0.10,
-
-      cylinderHeight:
-        1.70,
-
-      ambientTemperature:
-        20,
-    },
-  };
-
-
-  /*
-   * ==============================================================
-   * EXPORT AFTER HEAT PUMP
-   * ==============================================================
-   *
-   * Store the controller decision for every quarter-hour.
-   *
-   * NaN lets us distinguish:
-   *
-   *   actual export = 0
-   *
-   * from:
-   *
-   *   no decision recorded
-   */
-
-  const exportAfterHpPowerByIndex =
-    new Float64Array(
-      init.weatherData.length,
-    );
-
-  exportAfterHpPowerByIndex.fill(
-    Number.NaN,
-  );
-
+  const storage = createTankComparisonStorage(storageVolume);
 
   /*
    * ==============================================================
@@ -167,14 +101,6 @@ function simulateTank(
       targetTemperature:
         75,
 
-      onDecision:
-        (decision) => {
-
-          exportAfterHpPowerByIndex[
-            decision.currentIndex
-          ] =
-            decision.exportAfterHpPower;
-        },
     });
 
 
@@ -260,19 +186,6 @@ function simulateTank(
       step.unmetThermalDemand;
 
 
-    /*
-     * Prefer the actual Plasma-Wave controller decision.
-     *
-     * The fallback reproduces the physical balance if no
-     * decision was recorded for a particular index.
-     */
-
-    const recordedExport =
-      exportAfterHpPowerByIndex[
-        index
-      ];
-
-
     const exportBeforeHpPower =
       Math.max(
         0,
@@ -287,20 +200,12 @@ function simulateTank(
       init.timeStepHours;
 
 
-    const fallbackExport =
+    const exportAfterHpPower =
       Math.max(
         0,
         exportBeforeHpPower -
           heatPumpElectricalPower,
       );
-
-
-    const exportAfterHpPower =
-      Number.isFinite(
-        recordedExport,
-      )
-        ? recordedExport
-        : fallbackExport;
 
 
     feedIn +=
@@ -376,23 +281,6 @@ process.on(
         "init"
       ) {
 
-        const nativeBinding = getSunOptNativeBinding();
-        const required = [
-          "registerAccelerationScope",
-          "registerAccelerationDataPair",
-          "runNoSunshineKernelContext",
-          "runPeakShavingCausalKernelContext",
-        ] as const;
-
-        const missing = required.filter(
-          (name) => typeof nativeBinding?.[name] !== "function",
-        );
-        if (missing.length > 0) {
-          throw new Error(
-            `Approach A requires the consolidated A1+A2 native addon; missing exports: ${missing.join(", ")}`,
-          );
-        }
-
         init =
           message.payload;
 
@@ -425,20 +313,6 @@ process.on(
             fallbackCalls: status.fallbackCalls,
             failures: status.failures,
           }));
-
-        // Do not claim A1+A2 success if the native scopes silently fell back.
-        for (const scopeId of [
-          "rust_noSunshine",
-          "rust_peakShavingCausal",
-        ]) {
-          const status = nativeScopes.find((s) => s.scopeId === scopeId);
-          if (!status || status.nativeCalls === 0 ||
-              status.fallbackCalls !== 0 || status.failures !== 0) {
-            throw new Error(
-              `Approach A native execution incomplete for ${scopeId}: ${JSON.stringify(status ?? null)}`,
-            );
-          }
-        }
 
         send({
           type:

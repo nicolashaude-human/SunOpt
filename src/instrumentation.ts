@@ -13,9 +13,12 @@ export async function register(): Promise<void> {
     return;
   }
 
-  const {
-    initializeReferenceWeatherCache,
-  } = await import("./server/reference-weather-cache");
+  const [{ initializeReferenceWeatherCache }, { initializeTankComparisonBackend }] =
+    await Promise.all([
+      import("./server/reference-weather-cache"),
+      import("./simulation/tank-comparison-backend"),
+    ]);
 
+  initializeTankComparisonBackend();
   await initializeReferenceWeatherCache();
 }

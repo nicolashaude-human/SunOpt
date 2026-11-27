@@ -37,6 +37,7 @@ export type SunOptNativeFunction =
 
 
 export interface SunOptNativeBinding {
+  testCudaContext?: (deviceId?: number) => { streamReady: boolean };
   runNoSunshineKernel?:
     SunOptNativeFunction;
 

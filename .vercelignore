@@ -1,0 +1,7 @@
+updates/
+rust/sunopt-core/target/
+rust/sunopt-node/target/
+rust/sunopt-node/benchmarks/
+rust/sunopt-node/blackwell-*-results/
+rust/sunopt-node/cuda-disasm/
+rust/sunopt-node/*.bin

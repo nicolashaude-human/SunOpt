@@ -1001,7 +1001,7 @@ export function createPeakShavingCausalAccelerator(
       SUNOPT_ACCELERATION_SCOPE.run<
         NativePeakShavingCausalResult
       >(
-        "peakShavingCausal",
+        "rust_peakShavingCausal",
 
         [
           exportPowerByIndex,

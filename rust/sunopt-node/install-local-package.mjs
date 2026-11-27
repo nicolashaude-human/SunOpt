@@ -24,6 +24,11 @@ async function sha256(path) {
 }
 
 async function install() {
+  if (process.platform !== "win32" || process.arch !== "x64") {
+    console.info("[SunOpt] Windows x64 native addon skipped on this platform.");
+    return;
+  }
+
   for (const fileName of requiredFiles) {
     await readFile(join(sourceDirectory, fileName));
   }

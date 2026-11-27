@@ -431,6 +431,7 @@ async function tryDiskCache():
 async function initializeInternal():
   Promise<void> {
 
+  const deployed = process.env.VERCEL === "1";
   let retryDelayMs =
     WEATHER_RETRY_INITIAL_MS;
 
@@ -439,7 +440,11 @@ async function initializeInternal():
 
   let cache:
     DiskWeatherCache | null =
-    null;
+    deployed ? await tryDiskCache() : null;
+
+  if (deployed && cache === null) {
+    throw new Error("The deployed reference weather cache is missing or invalid.");
+  }
 
   while (cache === null) {
     try {
@@ -508,9 +513,9 @@ async function initializeInternal():
   state.error =
     null;
 
-  await writePresentationSnapshot(
-    cache,
-  );
+  if (!deployed) {
+    await writePresentationSnapshot(cache);
+  }
 
   console.info(
     "[SunOpt] Reference weather cache ready:",

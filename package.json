@@ -9,8 +9,9 @@
     "lint": "eslint",
     "update-localities": "tsx scripts/update-localities.ts",
     "native:install": "node rust/sunopt-node/install-local-package.mjs",
+    "build:tank-worker": "node scripts/build-tank-comparison-worker.mjs",
     "predev": "npm run native:install",
-    "prebuild": "npm run native:install",
+    "prebuild": "npm run native:install && npm run build:tank-worker",
     "prestart": "npm run native:install"
   },
   "dependencies": {
@@ -28,6 +29,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "esbuild": "0.28.2",
     "babel-plugin-react-compiler": "1.0.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.5",

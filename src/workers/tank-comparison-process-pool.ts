@@ -122,13 +122,9 @@ export async function runTankComparisonProcessPool(
   // Each worker reports cumulative counters; only its LAST snapshot counts.
   const lastNativeScopes = new Map<number, ApproachANativeScopes>();
 
-  const workerPath =
-    path.join(
-      process.cwd(),
-      "src",
-      "workers",
-      "tank-comparison-worker.ts",
-    );
+  const workerArgs = process.env.NODE_ENV === "production"
+    ? [path.join(process.cwd(), "build", "tank-comparison-worker.cjs")]
+    : ["--import", "tsx", path.join(process.cwd(), "src", "workers", "tank-comparison-worker.ts")];
 
   return new Promise<
     ApproachAProcessPoolResult
@@ -245,11 +241,7 @@ export async function runTankComparisonProcessPool(
         ChildProcess =
         spawn(
           process.execPath,
-          [
-            "--import",
-            "tsx",
-            workerPath,
-          ],
+          workerArgs,
           {
             stdio: [
               "ignore",

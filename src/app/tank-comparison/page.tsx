@@ -5,6 +5,7 @@
 import { KELLY_CHART_COLORS } from "@/styles/chart-palette";
 
 import {
+  useEffect,
   useMemo,
   useState,
 } from "react";
@@ -23,6 +24,7 @@ import {
 } from "@/components/tank-comparison-mode-switch";
 
 import type {
+  TankComparisonBackendStatus,
   TankComparisonCausalPath,
   TankComparisonRequest,
   TankComparisonResponse,
@@ -132,6 +134,19 @@ function ThermalReserveChart({
 }
 
 export default function TankComparisonPage() {
+  const [backend, setBackend] = useState<TankComparisonBackendStatus | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/tank-comparison", { signal: controller.signal })
+      .then(response => response.ok ? response.json() : null)
+      .then((status: TankComparisonBackendStatus | null) => {
+        if (!controller.signal.aborted) setBackend(status);
+      })
+      .catch(() => {
+        // The POST endpoint can still choose a backend if status is unavailable.
+      });
+    return () => controller.abort();
+  }, []);
   const [
     heatPumpThermalPower,
     setHeatPumpThermalPower,
@@ -383,17 +398,13 @@ function chartData(
             </p>
           </div>
 
-          <TankComparisonModeSwitch
-            value={
-              causalPath
-            }
-            disabled={
-              loading
-            }
-            onChange={
-              setCausalPath
-            }
-          />
+          {backend?.backend === "cpu" ? (
+            <span className="rounded-full border border-[var(--sunopt-border)] px-3 py-2 text-sm font-bold">
+              CPU · {backend.workerCount} Worker
+            </span>
+          ) : (
+            <TankComparisonModeSwitch value={causalPath} disabled={loading} onChange={setCausalPath} />
+          )}
         </header>
 
         <section
@@ -868,7 +879,7 @@ function chartData(
         text-green-900
       "
     >
-      Pfad {result.causalPath}
+      {result.backend === "cpu" ? `CPU · ${result.workerCount} Worker` : `CUDA · Pfad ${result.causalPath}`}
     </div>
   </div>
 

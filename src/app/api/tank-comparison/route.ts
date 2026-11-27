@@ -1,5 +1,5 @@
 // src/app/api/tank-comparison/route.ts
-// Default tank-comparison endpoint now uses the central single-context GPU lockstep sweep.
+// Prefer the guarded CUDA sweep. Use the CPU reference pool when CUDA is unavailable.
 
 import {
   NextRequest,
@@ -28,6 +28,9 @@ import {
 import {
   runTankComparisonGpuLockstep,
 } from "@/simulation/tank-comparison-gpu-lockstep";
+import { initializeTankComparisonBackend, runTankComparisonOnCpu } from "@/simulation/tank-comparison-backend";
+import { calculateTankThermalReserve, createTankComparisonStorage } from "@/simulation/tank-comparison-thermal-reserve";
+import { getCachedWeatherData, initializeReferenceWeatherCache } from "@/server/reference-weather-cache";
 
 import {
   startSunoptGpuProfileGuard,
@@ -48,9 +51,10 @@ export const dynamic =
   "force-dynamic";
 
 
-interface WeatherApiResponse {
-  weatherData:
-    WeatherData;
+export const maxDuration = 300;
+
+export function GET(): NextResponse {
+  return NextResponse.json(initializeTankComparisonBackend());
 }
 
 
@@ -179,56 +183,14 @@ export async function POST(
       performance.now();
 
 
-    const weatherResponse =
-      await fetch(
-        `${request.nextUrl.origin}/api/weather`,
-        {
-          method:
-            "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-
-          body:
-            JSON.stringify({
-              postalCode:
-                POSTAL_CODE,
-
-              pvSystem,
-
-              startYear:
-                YEAR,
-
-              endYear:
-                YEAR,
-            }),
-
-          cache:
-            "no-store",
-        },
-      );
-
-
-    if (
-      !weatherResponse.ok
-    ) {
-
-      const errorText =
-        await weatherResponse.text();
-
-
-      throw new Error(
-        `Weather API failed: ${errorText}`,
-      );
-    }
-
-
-    const weatherResult =
-      (
-        await weatherResponse.json()
-      ) as WeatherApiResponse;
+    await initializeReferenceWeatherCache();
+    const weatherData: WeatherData = getCachedWeatherData({
+      postalCode: POSTAL_CODE, pvSystem, startYear: YEAR, endYear: YEAR,
+    }).map(point => ({
+      ...point,
+      outdoorTemperature: point.temperature ?? Number.NaN,
+      irradiance: point.irradiance ?? 0,
+    }));
 
 
     const hourlyHotWaterData =
@@ -237,13 +199,13 @@ export async function POST(
 
         DEFAULT_HOT_WATER_PROFILE,
 
-        weatherResult.weatherData,
+        weatherData,
       );
 
 
     const quarterHour =
       resampleToQuarterHour(
-        weatherResult.weatherData,
+        weatherData,
 
         hourlyHotWaterData,
       );
@@ -296,6 +258,51 @@ export async function POST(
       );
 
 
+    const simulationInput = {
+      ...quarterHour,
+      heatPump,
+      control,
+      timeStepHours: TIME_STEP_HOURS,
+      pvProduction,
+      gridPriceChfPerKWh: body.gridPriceChfPerKWh,
+      feedInPriceChfPerKWh: body.feedInPriceChfPerKWh,
+    };
+    const metadata = {
+      fake: false,
+      year: YEAR,
+      heatPumpThermalPower: body.heatPumpThermalPower,
+      pvPeakPower: body.pvPeakPower,
+      gridPriceChfPerKWh: body.gridPriceChfPerKWh,
+      feedInPriceChfPerKWh: body.feedInPriceChfPerKWh,
+      preparationDurationMs,
+    };
+    const backend = initializeTankComparisonBackend();
+    if (backend.backend === "cpu") {
+      const { points, workerCount, nativeScopes, queueDurationMs, sweepDurationMs } = await runTankComparisonOnCpu(
+        { init: simulationInput, storageVolumes, workerCount: backend.workerCount },
+        request.signal,
+      );
+      const times = points.map(point => point.simulationDurationMs);
+      return NextResponse.json({
+        ...metadata,
+        backend: "cpu",
+        causalPath: null,
+        workerCount,
+        nativeScopes,
+        cpuQueueDurationMs: queueDurationMs,
+        sweepDurationMs,
+        totalDurationMs: performance.now() - totalStart,
+        averageSimulationDurationMs: times.reduce((sum, time) => sum + time, 0) / times.length,
+        minimumSimulationDurationMs: Math.min(...times),
+        maximumSimulationDurationMs: Math.max(...times),
+        points,
+        thermalReserve: calculateTankThermalReserve(
+          quarterHour.hotWaterData, quarterHour.weatherData, TIME_STEP_HOURS,
+          createTankComparisonStorage(storageVolumes[0]),
+        ),
+      } satisfies TankComparisonResponse & { nativeScopes: typeof nativeScopes; cpuQueueDurationMs: number });
+    }
+
     // Fail closed: the proven B14P/Q NVAPI guard must set the 1050 mV
     // V/F point, +625 MHz curve offset and manual 70% fan COMMAND before
     // productive A/B. NVML here only reads telemetry. The legacy guard
@@ -338,34 +345,7 @@ export async function POST(
     try {
       try {
         lockstep =
-        runTankComparisonGpuLockstep(
-        {
-          weatherData:
-            quarterHour.weatherData,
-
-          hotWaterData:
-            quarterHour.hotWaterData,
-
-          heatPump,
-
-          control,
-
-          timeStepHours:
-            TIME_STEP_HOURS,
-
-          pvProduction,
-
-          gridPriceChfPerKWh:
-            body.gridPriceChfPerKWh,
-
-          feedInPriceChfPerKWh:
-            body.feedInPriceChfPerKWh,
-
-          storageVolumes,
-
-          causalPath,
-        },
-      );
+          runTankComparisonGpuLockstep({ ...simulationInput, storageVolumes, causalPath });
         sweepEnd = performance.now();
       } finally {
         if (causalPath === "A") {
@@ -410,29 +390,12 @@ export async function POST(
         gpuQueueDurationMs: number;
       } = {
 
-      fake:
-        false,
+      ...metadata,
+      backend: "cuda",
 
       causalPath:
         lockstep.profile
           .causalPath,
-
-      year:
-        YEAR,
-
-      heatPumpThermalPower:
-        body.heatPumpThermalPower,
-
-      pvPeakPower:
-        body.pvPeakPower,
-
-      gridPriceChfPerKWh:
-        body.gridPriceChfPerKWh,
-
-      feedInPriceChfPerKWh:
-        body.feedInPriceChfPerKWh,
-
-      preparationDurationMs,
 
       sweepDurationMs,
 
@@ -472,7 +435,7 @@ export async function POST(
   ) {
 
     console.error(
-      "[SunOpt] GPU lockstep tank comparison failed.",
+      "[SunOpt] Tank comparison failed.",
       error,
     );
 

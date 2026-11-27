@@ -4,6 +4,10 @@ export type TankComparisonCausalPath =
   | "A"
   | "B";
 
+export type TankComparisonBackendStatus =
+  | { backend: "cuda" }
+  | { backend: "cpu"; availableCores: number; workerCount: number };
+
 
 export interface TankComparisonRequest {
   heatPumpThermalPower: number;
@@ -54,6 +58,8 @@ export interface TankComparisonThermalReserve {
 
 export interface TankComparisonResponse {
   fake: boolean;
+  backend?: "cuda" | "cpu";
+  workerCount?: number;
 
   /*
    * Causal solver path actually selected for this result.
@@ -62,7 +68,7 @@ export interface TankComparisonResponse {
    * B = B14P FP32 production path with FP64 fallback
    */
   causalPath:
-    TankComparisonCausalPath;
+    TankComparisonCausalPath | null;
 
   year: number;
 

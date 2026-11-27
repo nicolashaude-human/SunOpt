@@ -1,0 +1,1 @@
+GPU NVAPI profile A/B failed: startup_error; error=V/F curve-control write failed. Details: C:\NextJS\SunOpt\sunopt\updates\outbox\sunopt-nvapi-guard-productive-A-23688-1795780425506638600.txt; details=gpu-profile-A-23688-1795780425410139500.json
