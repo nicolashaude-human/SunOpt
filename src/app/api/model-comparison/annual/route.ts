@@ -19,6 +19,11 @@ import type {
   MonthlyEnergyValues,
 } from "@/types/model-comparison";
 
+import { gunzipSync } from "node:zlib";
+import { POST as simulateAnnualHotWater } from "../../debug/hot-water/route";
+import { getCachedWeatherData, initializeReferenceWeatherCache } from "@/server/reference-weather-cache";
+
+export const maxDuration = 300;
 export const runtime = "nodejs";
 
 interface RequestBody {
@@ -54,10 +59,6 @@ interface DebugResponse {
 interface WeatherPoint {
   timestamp: string;
   pvPower: number;
-}
-
-interface WeatherResponse {
-  weatherData: WeatherPoint[];
 }
 
 const MODEL_IDS: ComparisonModelId[] = [
@@ -281,7 +282,7 @@ export async function POST(
 ): Promise<NextResponse> {
   try {
     const body =
-      (await request.json()) as RequestBody;
+      (await request.clone().json()) as RequestBody;
 
     /*
      * Keep the expensive annual controller calculation in the
@@ -289,73 +290,24 @@ export async function POST(
      *
      * This endpoint is only a compact aggregation adapter.
      */
-    const [
-      simulationResponse,
-      weatherResponse,
-    ] =
-      await Promise.all([
-        fetch(
-          `${request.nextUrl.origin}/api/debug/hot-water`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
-            body:
-              JSON.stringify(body),
-            cache: "no-store",
-          },
-        ),
-        fetch(
-          `${request.nextUrl.origin}/api/weather`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
-            body:
-              JSON.stringify({
-                postalCode:
-                  body.postalCode,
-                pvSystem:
-                  body.pvSystem,
-                startYear:
-                  body.year,
-                endYear:
-                  body.year,
-              }),
-            cache: "no-store",
-          },
-        ),
-      ]);
-
-    if (
-      !simulationResponse.ok
-    ) {
-      throw new Error(
-        `Annual simulation failed with HTTP ${simulationResponse.status}: ${await simulationResponse.text()}`,
-      );
+    await initializeReferenceWeatherCache();
+    const weatherData = getCachedWeatherData({
+      postalCode: body.postalCode, pvSystem: body.pvSystem,
+      startYear: body.year, endYear: body.year,
+    });
+    const simulationResponse = await simulateAnnualHotWater(request);
+    if (!simulationResponse.ok) {
+      throw new Error(`Annual simulation failed with HTTP ${simulationResponse.status}: ${await simulationResponse.text()}`);
     }
-
-    if (
-      !weatherResponse.ok
-    ) {
-      throw new Error(
-        `Weather API failed with HTTP ${weatherResponse.status}: ${await weatherResponse.text()}`,
-      );
-    }
-
-    const simulation =
-      (await simulationResponse.json()) as DebugResponse;
-
-    const weather =
-      (await weatherResponse.json()) as WeatherResponse;
+    const payload = Buffer.from(await simulationResponse.arrayBuffer());
+    const decoded = simulationResponse.headers.get("Content-Encoding") === "gzip"
+      ? gunzipSync(payload)
+      : payload;
+    const simulation = JSON.parse(decoded.toString("utf8")) as DebugResponse;
 
     const weatherStepHours =
       estimateWeatherStepHours(
-        weather.weatherData,
+        weatherData,
       );
 
     const monthlyPvProduction =
@@ -366,7 +318,7 @@ export async function POST(
 
     for (
       const point of
-      weather.weatherData
+      weatherData
     ) {
       const month =
         getUtcMonth(

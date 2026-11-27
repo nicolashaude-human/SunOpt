@@ -197,6 +197,7 @@ export default function TankComparisonPage() {
 
   const [startedAt, setStartedAt] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const remainingSeconds = Math.max(0, 220 - elapsedSeconds);
 
   useEffect(() => {
     if (!loading) return;
@@ -678,7 +679,9 @@ function chartData(
                   Die 28 Speichergrössen werden verglichen.
                 </p>
                 <p className="tabular-nums text-[var(--sunopt-muted)]">
-                  Bisher {Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, "0")} min
+                  {remainingSeconds > 0
+                    ? `Noch ca. ${Math.floor(remainingSeconds / 60)}:${String(remainingSeconds % 60).padStart(2, "0")} min`
+                    : "Die Berechnung läuft weiter …"}
                 </p>
               </div>
               <progress className="mt-2 h-2 w-full" aria-label="Tankvergleich läuft" />
