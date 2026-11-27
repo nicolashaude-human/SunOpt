@@ -2,6 +2,7 @@
 
 import {
   createHash,
+  randomUUID,
 } from "node:crypto";
 
 import {
@@ -15,6 +16,8 @@ import {
 import {
   join,
 } from "node:path";
+
+import { tmpdir } from "node:os";
 
 import {
   gzip,
@@ -38,13 +41,9 @@ const gzipAsync =
 export const HOT_WATER_CACHE_VERSION = 1;
 
 
-const CACHE_DIRECTORY =
-  join(
-    process.cwd(),
-    "data",
-    "cache",
-    "hot-water",
-  );
+const CACHE_DIRECTORY = process.env.VERCEL === "1"
+  ? join(tmpdir(), "sunopt", "hot-water")
+  : join(process.cwd(), "data", "cache", "hot-water");
 
 
 function stableStringify(
@@ -162,16 +161,10 @@ export async function readHotWaterCache(
     error
   ) {
 
-    if (
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "ENOENT"
-    ) {
-      return null;
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+      console.warn("[SunOpt] Hot-water cache read failed. Recalculating.", error);
     }
-
-
-    throw error;
+    return null;
   }
 }
 
@@ -180,13 +173,6 @@ export async function writeHotWaterCache(
   cacheKey: string,
   value: unknown,
 ): Promise<Buffer> {
-
-  await mkdir(
-    CACHE_DIRECTORY,
-    {
-      recursive: true,
-    },
-  );
 
   const json =
     JSON.stringify(value);
@@ -203,29 +189,15 @@ export async function writeHotWaterCache(
     getCachePath(cacheKey);
 
   const temporaryPath =
-    `${cachePath}.${process.pid}.tmp`;
+    `${cachePath}.${randomUUID()}.tmp`;
 
   try {
-
-    await writeFile(
-      temporaryPath,
-      compressed,
-    );
-
-    await rename(
-      temporaryPath,
-      cachePath,
-    );
-
+    await mkdir(CACHE_DIRECTORY, { recursive: true });
+    await writeFile(temporaryPath, compressed);
+    await rename(temporaryPath, cachePath);
   } catch (error) {
-
-    try {
-      await unlink(temporaryPath);
-    } catch {
-      // Nothing to clean up.
-    }
-
-    throw error;
+    await unlink(temporaryPath).catch(() => undefined);
+    console.warn("[SunOpt] Hot-water cache write failed. Returning the computed response.", error);
   }
 
   return compressed;

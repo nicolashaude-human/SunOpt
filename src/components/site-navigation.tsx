@@ -29,6 +29,14 @@ function NavLink({ item, active, onSelect }: {
   active: boolean;
   onSelect?: () => void;
 }) {
+  if (item.href.endsWith(".html")) {
+    return (
+      <a href={item.href} className="sunopt-nav-link"
+        aria-current={active ? "page" : undefined} onClick={onSelect}>
+        {item.label}
+      </a>
+    );
+  }
   return (
     <Link href={item.href} className="sunopt-nav-link"
       aria-current={active ? "page" : undefined} onClick={onSelect}>

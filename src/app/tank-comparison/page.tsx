@@ -195,6 +195,17 @@ export default function TankComparisonPage() {
   ] =
     useState(false);
 
+  const [startedAt, setStartedAt] = useState(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!loading) return;
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((performance.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [loading, startedAt]);
+
   const [
     error,
     setError,
@@ -205,6 +216,8 @@ export default function TankComparisonPage() {
 
   async function runComparison():
     Promise<void> {
+    setStartedAt(performance.now());
+    setElapsedSeconds(0);
     setLoading(true);
     setError(null);
 
@@ -658,6 +671,25 @@ function chartData(
                 : "Tankvergleich starten"}
             </button>
           </div>
+          {loading && (
+            <div className="mt-4 rounded-xl border border-[var(--sunopt-border-soft)] p-4 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p role="status" className="font-semibold">
+                  Die 28 Speichergrössen werden verglichen.
+                </p>
+                <p className="tabular-nums text-[var(--sunopt-muted)]">
+                  Bisher {Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, "0")} min
+                </p>
+              </div>
+              <progress className="mt-2 h-2 w-full" aria-label="Tankvergleich läuft" />
+              <p className="mt-2 text-[var(--sunopt-muted)]">
+                {backend?.backend === "cuda"
+                  ? "Bei gleichzeitigen Anfragen kann der Lauf auf die GPU warten."
+                  : "Auf der CPU kann ein Jahresvergleich mehrere Minuten dauern."}
+                {" "}Das Ergebnis erscheint automatisch.
+              </p>
+            </div>
+          )}
         </section>
 
         {error && (
